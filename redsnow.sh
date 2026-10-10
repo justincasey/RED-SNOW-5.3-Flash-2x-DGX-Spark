@@ -13,6 +13,10 @@
 #
 # Configuration: environment > .env > defaults below. .env.example documents every key.
 set -euo pipefail
+if (( BASH_VERSINFO[0] < 4 )); then
+  echo "redsnow.sh needs bash 4 or newer (this is $BASH_VERSION). On macOS: brew install bash, then run it again." >&2
+  exit 1
+fi
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
