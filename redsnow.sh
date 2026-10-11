@@ -48,8 +48,8 @@ BASE_DIR="${BASE_DIR:-}"                                 # empty: $HOME/redsnow 
 MODELS_DIR="${MODELS_DIR:-}"                             # empty: $BASE_DIR/models
 
 TF_REPO="${TF_REPO:-https://github.com/justincasey/TensorFold.git}"
-TF_REF="${TF_REF:-redsnow-v1.0.1}"
-TF_COMMIT="${TF_COMMIT:-67e393f8e76ef222515fa21d07a5742a2b5b135d}"   # install refuses any other commit
+TF_REF="${TF_REF:-redsnow-v1.0.2}"
+TF_COMMIT="${TF_COMMIT:-f5d727aec09e3d25aac6435458bd3b467b4cf952}"   # install refuses any other commit
 
 PACK_REPO="${PACK_REPO:-vcruz305/RED-SNOW-5.3-FLASH-EXL3-SAGE-4.91bpw}"
 PACK_REV="${PACK_REV:-f6b8963784254095a54944f2963b2925fcf4b199}"
