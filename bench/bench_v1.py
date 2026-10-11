@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 # Adapted from vcruz305/GLM-5.3-EXL3-DGX-Spark-recipe@ed2f31d bench/bench_v1.py (MIT, (c) 2026 Victor Cruz);
-# see bench/LICENSE-vcruz305. Changes: RED-SNOW defaults and reference, server tok/s from the stats block, drafted
-# ids pinned per prefill path next to serial ones, the "tf_policy" checks of this engine, a streaming check, --pin.
+# see bench/LICENSE-vcruz305. Changes: RED-SNOW defaults and reference, server tok/s from the stats block, the
+# "tf_policy" checks of this engine, a streaming check, --pin.
 """/v1 smoke test and decode benchmark for the RED-SNOW TensorFold TP=2 server (stdlib only: runs on rank 0's
 system python3 or anywhere that reaches the API). `./redsnow.sh bench smoke|decode|pin` runs it on rank 0.
 
@@ -10,13 +10,12 @@ system python3 or anywhere that reaches the API). `./redsnow.sh bench smoke|deco
 
 Benchmark: six prompts (code, prose, math, chat_explain, chat_multiturn, long_doc) as the 2026-10-05 GLM-5.3 sweep
 sent them (thinking on, greedy, 512 tokens), streamed with "return_token_ids": true. For each prompt /tokenize must
-give the pinned prompt ids. With --ids reference (default) the "draft": false reply must equal the pinned serial ids
-and every drafted reply the pinned ids of its prefill path (fresh or resumed from the prompt cache; see PATHS),
-token for token: a regression oracle for engine changes. With --ids self nothing is compared to the pins; --pin
-writes this run's ids as a new reference (run it on a fresh boot so both paths occur). Whether the fresh drafted
-reply equals the serial one is reported per prompt. Speed: the server's decode rate (tokens after the first over the
-stats block's decode_s) and the client's (tokens after the first over the first to last delta), medians over --reps.
-Exit 1 on any failed check.
+give the pinned prompt ids. With --ids reference (default) the "draft": false reply and every drafted reply must
+equal the pinned serial ids token for token, whether the drafted request prefilled the prompt whole or resumed it
+from the prompt cache: a regression oracle for engine changes. With --ids self every drafted reply must equal this
+server's own "draft": false reply; --pin then writes this run's prompt and serial ids as a new reference. Speed: the
+server's decode rate (tokens after the first over the stats block's decode_s) and the client's (tokens after the
+first over the first to last delta), medians over --reps. Exit 1 on any failed check.
 
 Smoke: /v1/models, /health, /tokenize parity (thinking on ends <|assistant|><think>, off ends <|assistant|>),
 a thinking-off reply that must stop at a turn-end id with clean content, a thinking-on streamed reply whose reasoning
@@ -214,21 +213,13 @@ def smoke(cl: Client, ref: dict, ck: Checks) -> dict:
     return out
 
 
-# A drafted request takes one of two prefill paths, with different bits on this engine: "fresh" (stats cached == 0,
-# the whole prompt prefilled, a snapshot kept at its last token) or "resumed" (cached > 0, the kept snapshot restored
-# and the rest prefilled). The first drafted request of a prompt on a fresh boot is fresh, later ones resume.
-PATHS = ("fresh", "resumed")
-
-
-def path_of(stats: dict) -> str:
-    return "resumed" if (stats.get("cached") or 0) > 0 else "fresh"
-
-
 def bench(cl: Client, ref: dict, ck: Checks, reps: int, serial: bool, names: list[str] | None,
           ids_mode: str = "reference") -> dict:
-    """ids_mode "reference": the serial reply must equal the pinned serial ids and every drafted reply the pinned ids
-    of its prefill path. "self": no pinned comparison; replies on one path must agree with each other."""
+    """ids_mode "reference": the serial reply and every drafted reply must equal the pinned serial ids. "self": every
+    drafted reply must equal this server's own "draft": false reply (a new reference, or another numeric path)."""
     rows = []
+    if ids_mode == "self" and not serial:
+        raise SystemExit("--ids self needs the serial run (drop --no-serial)")
     warm = cl.stream(chat_body([{"role": "user", "content": "Hello"}], 16, True))
     ck.add("warm-up request", "error" not in warm, str(warm.get("error", ""))[:200])
     for p in ref["prompts"]:
@@ -239,7 +230,8 @@ def bench(cl: Client, ref: dict, ck: Checks, reps: int, serial: bool, names: lis
             ck.add(f"{p['name']}: prompt ids == reference", got == p["prompt_ids"],
                    f"first diff {first_diff(got, p['prompt_ids'])}")
         body = chat_body(p["messages"], p["max_tokens"], True)
-        row = {"prompt": p["name"], "prompt_len": len(got), "prompt_ids": got, "runs": [], "ids": {}}
+        row = {"prompt": p["name"], "prompt_len": len(got), "prompt_ids": got, "runs": []}
+        want = p.get("serial_ids")
         if serial:
             r = cl.stream(dict(body, draft=False))
             row["serial_ids"] = r.get("ids") or []
@@ -248,7 +240,8 @@ def bench(cl: Client, ref: dict, ck: Checks, reps: int, serial: bool, names: lis
                        f"n {r.get('n')}, first diff {first_diff(r.get('ids') or [], p['serial_ids'])}, "
                        f"tok/s {r.get('stats', {}).get('tok_s')}")
             else:
-                ck.add(f"{p['name']}: serial reply complete", "error" not in r and bool(row["serial_ids"]),
+                want = row["serial_ids"]
+                ck.add(f"{p['name']}: serial reply complete", "error" not in r and bool(want),
                        f"n {r.get('n')}, tok/s {r.get('stats', {}).get('tok_s')}")
             row["serial"] = {"tok_s": r.get("stats", {}).get("tok_s"), "client_tok_s": r.get("client_tok_s"),
                              "finish": r.get("finish"), "ttft_s": r.get("ttft_s"), "n": r.get("n")}
@@ -256,39 +249,27 @@ def bench(cl: Client, ref: dict, ck: Checks, reps: int, serial: bool, names: lis
             r = cl.stream(body)
             st = r.get("stats") or {}
             ids = r.get("ids") or []
-            path = path_of(st)
-            if ids_mode == "reference":
-                want = p[f"{path}_ids"]
-                ck.add(f"{p['name']} rep {rep}: drafted ids == pinned {path}", ids == want,
-                       f"n {r.get('n')}, first diff {first_diff(ids, want)}, tok/s {st.get('tok_s')}, "
-                       f"tokens/round {st.get('tokens_per_round')}")
-            else:
-                want = row["ids"].setdefault(path, ids)
-                ck.add(f"{p['name']} rep {rep}: drafted reply complete, same as the first {path} one",
-                       "error" not in r and bool(ids) and ids == want,
-                       f"n {r.get('n')}, tok/s {st.get('tok_s')}, tokens/round {st.get('tokens_per_round')}")
-            row["ids"].setdefault(path, ids)
-            row["runs"].append({"path": path, "cached": st.get("cached"), "tok_s": st.get("tok_s"),
-                                "client_tok_s": r.get("client_tok_s"), "tokens_per_round": st.get("tokens_per_round"),
-                                "ttft_s": r.get("ttft_s"), "max_gap_s": r.get("max_gap_s"), "n": r.get("n"),
-                                "finish": r.get("finish"), "policy": st.get("policy"), "drafted": st.get("drafted"),
+            cached = st.get("cached") or 0           # > 0: resumed from the prompt cache
+            ck.add(f"{p['name']} rep {rep}: drafted ids == {'pinned' if ids_mode == 'reference' else 'this server'} "
+                   f"serial", ids == want,
+                   f"n {r.get('n')}, cached {cached}, first diff {first_diff(ids, want or [])}, tok/s "
+                   f"{st.get('tok_s')}, tokens/round {st.get('tokens_per_round')}")
+            row["runs"].append({"cached": cached, "tok_s": st.get("tok_s"), "client_tok_s": r.get("client_tok_s"),
+                                "tokens_per_round": st.get("tokens_per_round"), "ttft_s": r.get("ttft_s"),
+                                "max_gap_s": r.get("max_gap_s"), "n": r.get("n"), "finish": r.get("finish"),
+                                "identical": ids == want, "policy": st.get("policy"), "drafted": st.get("drafted"),
                                 "accepted": st.get("accepted"), "stages_ms": st.get("stages_ms")})
-        fresh = row["ids"].get("fresh")
-        if serial and fresh is not None:
-            row["fresh_eq_serial"] = fresh == row["serial_ids"]
-            row["fresh_first_diff"] = first_diff(fresh, row["serial_ids"])
         med = lambda k: statistics.median([x[k] for x in row["runs"] if x.get(k) is not None]) if row["runs"] else None  # noqa: E731
         row["tok_s"], row["client_tok_s"], row["tpr"] = med("tok_s"), med("client_tok_s"), med("tokens_per_round")
-        row["fresh_ttft_s"] = next((x["ttft_s"] for x in row["runs"] if x["path"] == "fresh"), None)
+        row["fresh_ttft_s"] = next((x["ttft_s"] for x in row["runs"] if not x["cached"]), None)
         rows.append(row)
-    print("\n| prompt | tokens | server tok/s (median) | client tok/s | tokens/round | TTFT s (fresh) | serial tok/s | "
-          "fresh = serial |")
+    print("\n| prompt | tokens | server tok/s (median) | client tok/s | tokens/round | TTFT s (uncached) | serial tok/s | "
+          "exact |")
     print("|---|---:|---:|---:|---:|---:|---:|---|")
     for r in rows:
-        eq = r.get("fresh_eq_serial")
+        ex = all(x["identical"] for x in r["runs"])
         print(f"| {r['prompt']} | {r['prompt_len']} | {fmt(r['tok_s'])} | {fmt(r['client_tok_s'])} | {fmt(r['tpr'])} | "
-              f"{fmt(r['fresh_ttft_s'])} | {fmt((r.get('serial') or {}).get('tok_s'))} | "
-              f"{'-' if eq is None else 'yes' if eq else 'no @' + str(r['fresh_first_diff'])} |")
+              f"{fmt(r['fresh_ttft_s'])} | {fmt((r.get('serial') or {}).get('tok_s'))} | {'yes' if ex else 'NO'} |")
     full = [r for r in rows if r["tok_s"]]
     out = {"rows": rows}
     if full and len(full) == len(ref["prompts"]):
@@ -301,14 +282,12 @@ def bench(cl: Client, ref: dict, ck: Checks, reps: int, serial: bool, names: lis
 
 
 def pin(ref: dict, res: dict, path: str, meta: dict) -> None:
-    """A new reference from a full --ids self run on a fresh boot: the prompts with this server's prompt ids, serial
-    ids and the drafted ids of both prefill paths."""
+    """A new reference from a full --ids self run (every drafted reply already equal to the serial one): the prompts
+    with this server's prompt ids and serial reply ids."""
     by = {r["prompt"]: r for r in res["rows"]}
-    missing = [p["name"] for p in ref["prompts"] if p["name"] not in by or "serial_ids" not in by[p["name"]]
-               or any(k not in by[p["name"]]["ids"] for k in PATHS)]
+    missing = [p["name"] for p in ref["prompts"] if p["name"] not in by or "serial_ids" not in by[p["name"]]]
     if missing:
-        raise SystemExit(f"--pin needs every prompt's serial run and both prefill paths (a fresh boot, --reps 2 or "
-                         f"more); missing for {missing}")
+        raise SystemExit(f"--pin needs every prompt with its serial run; missing {missing}")
     sha = lambda ids: hashlib.sha256(json.dumps(ids).encode()).hexdigest()[:16]  # noqa: E731
     prompts = []
     for p in ref["prompts"]:
@@ -316,13 +295,10 @@ def pin(ref: dict, res: dict, path: str, meta: dict) -> None:
         prompts.append({"name": p["name"], "messages": p["messages"], "max_tokens": p["max_tokens"],
                         "prompt_len": r["prompt_len"], "prompt_ids": r["prompt_ids"], "prompt_sha": sha(r["prompt_ids"]),
                         "serial_ids": r["serial_ids"], "serial_sha": sha(r["serial_ids"]),
-                        **{f"{k}_ids": r["ids"][k] for k in PATHS}, **{f"{k}_sha": sha(r["ids"][k]) for k in PATHS},
-                        "fresh_eq_serial": r["fresh_eq_serial"], "fresh_first_diff": r["fresh_first_diff"],
-                        "resumed_eq_fresh": r["ids"]["resumed"] == r["ids"]["fresh"],
                         "tok_s": r["tok_s"], "serial_tok_s": (r.get("serial") or {}).get("tok_s")})
     keep = {"eos_ids": list(EOS_IDS), "think_open_id": THINK_OPEN_ID, "think_end_id": THINK_END_ID}
-    out = {"what": "RED-SNOW reference: the six sweep prompts' served prompt ids, serial (\"draft\": false) reply ids "
-                   "and default drafted reply ids per prefill path (fresh, resumed), greedy, 512 tokens, thinking on",
+    out = {"what": "RED-SNOW reference: the six sweep prompts' served prompt ids and serial (\"draft\": false) reply "
+                   "ids, which every drafted reply equals; greedy, 512 tokens, thinking on",
            "pinned": time.strftime("%Y-%m-%d %H:%M:%S"), **meta, **keep,
            "mean_tok_s": res.get("mean_tok_s"), "mean_serial_tok_s": res.get("mean_serial_tok_s"), "prompts": prompts}
     with open(path, "w") as f:
@@ -351,8 +327,8 @@ def main() -> int:
     ap.add_argument("--prompts", default="", help="comma list (default: all 6)")
     ap.add_argument("--api-key", default=os.environ.get("API_KEY") or None)
     a = ap.parse_args()
-    if a.pin and (a.ids != "self" or a.no_serial or a.prompts or a.reps < 2):
-        raise SystemExit("--pin needs --ids self, the serial run, every prompt and at least two reps")
+    if a.pin and (a.ids != "self" or a.no_serial or a.prompts or a.reps < 1):
+        raise SystemExit("--pin needs --ids self, the serial run, every prompt and at least one rep")
     with open(a.ref) as f:
         ref = json.load(f)
     cl = Client(a.base, a.model, a.api_key)

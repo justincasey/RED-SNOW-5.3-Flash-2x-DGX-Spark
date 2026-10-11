@@ -17,19 +17,19 @@ cp .env.example .env        # set RANK0, RANK1, and the drafter license choice
 
 ## Headline numbers
 
-Measured 2026-10-10 on 2× DGX Spark (GB10, 128 GB) with this repo's defaults (engine `redsnow-v1.0.1`), by
+Measured 2026-10-10 on 2× DGX Spark (GB10, 128 GB) with this repo's defaults (engine `redsnow-v1.0.2`), by
 `./redsnow.sh bench all`: vcruz305's benchmark suite, described under [Benchmarks](#benchmarks). Greedy decoding,
 one request at a time. Decode tok/s counts the server's decode time only.
 
 | Measurement | Result |
 |---|---|
-| Decode with DFlash2, mean of 6 real prompts (512 tokens each, thinking on) | **41.4 tok/s** (prose 32.2 … math 55.1) |
-| Decode without drafting, same prompts | 24.6 tok/s |
-| Time to first token, ~220-token prompt | 0.78 s |
-| Time to first token, 127,712-token prompt (Moby-Dick) | 335 s (381 tok/s prefill) |
-| Decode after that prompt, drafted / not drafted | 35.9 / 22.9 tok/s |
+| Decode with DFlash2, mean of 6 real prompts (512 tokens each, thinking on) | **39.6 tok/s** (prose 31.9 … math 55.9) |
+| Decode without drafting, same prompts and same replies | 24.4 tok/s |
+| Time to first token, ~220-token prompt | 0.78 s (0.08–0.21 s when the prompt is repeated) |
+| Time to first token, 127,712-token prompt (Moby-Dick) | 336 s (381 tok/s prefill) |
+| Decode after that prompt, drafted / not drafted | 34.9 / 22.7 tok/s |
 | SixCat decode p50 (synthetic prompt that drafts unusually well: a ceiling, not typical speed) | 67.4 tok/s |
-| SixCat prefill p50, ~2,600-token prompt | 378 tok/s |
+| SixCat prefill p50, ~2,640-token prompt | 379 tok/s |
 
 128K-token context (fp8 KV cache). Needle recall exact at 36K and 90K tokens. The server is ready about 60 s
 after `start`. The speed depends on what the model writes: DFlash2's drafts are accepted far more often for
@@ -169,9 +169,9 @@ Any other `TF_GLM_*`, `TF_MOE*` or `TENSORFOLD_*` variable you set reaches both 
 |---|---|
 | Model | GLM-5.3-Flash architecture: 45 layers (3 dense + 42 MoE, 288 experts, top-8), hybrid KDA linear attention and DSA sparse attention, 1M native context |
 | Weights | RED-SNOW EXL3 SAGE MixedK, 4.91 bpw, mul1 codebook, 36 shards; the `lm_head` comes from the BF16 release, pinned by revision and sha256 |
-| Engine | TensorFold 0.6.5 + the GLM-5.3 TP=4 CUDA work of `vcruz305/TensorFold` `glm53-tp4-spark` + this project's branch `redsnow-v1` ([justincasey/TensorFold](https://github.com/justincasey/TensorFold), tag `redsnow-v1.0.1`) |
+| Engine | TensorFold 0.6.5 + the GLM-5.3 TP=4 CUDA work of `vcruz305/TensorFold` `glm53-tp4-spark` + this project's branch `redsnow-v1` ([justincasey/TensorFold](https://github.com/justincasey/TensorFold), tag `redsnow-v1.0.2`) |
 | Split | TP=2, one rank a Spark. Rank 0 runs the API and the rendezvous; NCCL over RoCE on the QSFP link |
-| Decode | DFlash2 chain drafting with the engine's adaptive policy; drafted rounds are verified by the target in captured CUDA graphs (up to 8 rows), so drafting changes speed, not the reply (prefill paths aside: [Known limits](#known-limits)); a streamed reply arrives one decode round at a time |
+| Decode | DFlash2 chain drafting with the engine's adaptive policy; drafted rounds are verified by the target in captured CUDA graphs (up to 8 rows), so drafting changes speed, not the reply: a drafted reply equals the `"draft": false` one token for token; a streamed reply arrives one decode round at a time |
 | KV cache | DSA latent cache in fp8 (e4m3, per-token scale); the indexer keys dominate the cache cost (~9.7 KiB a token) |
 | Memory | ~102.6 GiB a rank at 128K context, of ~112 GiB usable |
 
@@ -187,52 +187,57 @@ The `redsnow-v1` branch adds to TensorFold 0.6.5 + `glm53-tp4-spark`:
 
 ## Benchmarks
 
-### v1.0.1 baseline (2026-10-10, this repo's defaults)
+### v1.0.2 baseline (2026-10-10, this repo's defaults)
 
 `./redsnow.sh bench all` on a fresh boot, run on rank 0. The suite is adapted from vcruz305's
 [GLM-5.3 recipe](https://github.com/vcruz305/GLM-5.3-EXL3-DGX-Spark-recipe) (`bench/`, MIT) and
 [SixCat](https://github.com/vcruz305/sixcat-eval) v0.7.0. Raw output:
-[`bench/records/2026-10-10-v1.0.1-baseline/`](bench/records/2026-10-10-v1.0.1-baseline/).
+[`bench/records/2026-10-10-v1.0.2-baseline/`](bench/records/2026-10-10-v1.0.2-baseline/).
 
 | Step | What it runs |
 |---|---|
 | `bench smoke` | `/v1/models`, `/health`, `/tokenize` against the pinned prompt ids, thinking on/off channel split and markup leaks, the reply streaming round by round, drafted == `"draft": false` on a short reply, DFlash2 as the default drafter, an invalid `tf_policy` refused |
-| `bench decode` | 6 prompts (thinking on, greedy, 512 tokens): one `"draft": false` run and 3 drafted runs each; every reply must equal the ids pinned in `bench/redsnow_reference.json` |
-| `bench long` | a 127.5K-token Project Gutenberg prompt (sha256-pinned book), not drafted then drafted: TTFT, prefill, decode |
+| `bench decode` | 6 prompts (thinking on, greedy, 512 tokens): one `"draft": false` run and 3 drafted runs each (the first prefills the prompt, the others resume it from the prompt cache); every reply must equal the serial ids pinned in `bench/redsnow_reference.json` |
+| `bench long` | a 127.5K-token Project Gutenberg prompt (sha256-pinned book), not drafted then drafted: TTFT, prefill, decode, and drafted == not drafted |
 | `bench sixcat` | SixCat `speed --policy strict --thinking off`: decode, balanced and prefill profiles at one request in flight |
-| `bench pin` | writes a new `bench/redsnow_reference.json` (fresh boot only) |
+| `bench pin` | writes a new `bench/redsnow_reference.json` |
 
 | Prompt | Prompt tokens | Drafted tok/s (median of 3) | Tokens per round | TTFT | Not drafted tok/s |
 |---|---|---|---|---|---|
-| code | 221 | 42.09 | 3.28 | 0.78 s | 24.68 |
-| prose | 214 | 32.23 | 2.23 | 0.77 s | 24.87 |
-| math | 228 | 55.09 | 4.52 | 0.82 s | 24.75 |
-| chat_explain | 242 | 36.47 | 2.75 | 0.85 s | 24.71 |
-| chat_multiturn | 342 | 42.04 | 3.04 | 1.12 s | 24.74 |
-| long_doc | 3,011 | 40.64 | 3.28 | 8.23 s | 23.92 |
-| **mean** | | **41.43** | | | **24.61** |
+| code | 221 | 39.71 | 3.01 | 0.78 s | 24.62 |
+| prose | 214 | 31.93 | 2.19 | 0.77 s | 24.61 |
+| math | 228 | 55.85 | 4.71 | 0.81 s | 24.55 |
+| chat_explain | 242 | 34.81 | 2.56 | 0.85 s | 24.54 |
+| chat_multiturn | 342 | 35.14 | 2.42 | 1.12 s | 24.53 |
+| long_doc | 3,011 | 39.95 | 3.13 | 8.24 s | 23.79 |
+| **mean** | | **39.57** | | | **24.44** |
+
+Every drafted reply equals the `"draft": false` reply (31/31 checks). The TTFT column is the first request; a
+repeat of the same prompt resumes from the prompt cache in 0.08–0.21 s.
 
 | Long prompt (127,712 tokens) | TTFT | Prefill | Decode (512 tokens) |
 |---|---|---|---|
-| not drafted | 333.6 s | 382.9 tok/s | 22.93 tok/s |
-| drafted | 335.3 s | 380.9 tok/s | 35.85 tok/s (2.68 tokens per round) |
+| not drafted | 334.3 s | 382.0 tok/s | 22.73 tok/s |
+| drafted (same reply) | 335.6 s | 380.6 tok/s | 34.93 tok/s (2.65 tokens per round) |
 
 | SixCat profile (one request in flight) | p50 |
 |---|---|
-| decode, synthetic word-list prompt, up to 512 tokens | 67.39 tok/s |
-| prefill, ~2,640-token prompt | 377.5 tok/s, TTFT 7.00 s |
-| balanced, ~400-token prompt, 128 tokens | 36.03 tok/s aggregate, TTFT p95 1.69 s |
+| decode, synthetic word-list prompt, up to 512 tokens | 67.37 tok/s |
+| prefill, ~2,640-token prompt | 378.6 tok/s, TTFT 6.98 s |
+| balanced, ~400-token prompt, 128 tokens | 36.17 tok/s aggregate, TTFT p95 1.67 s |
 
 Quote the 6-prompt mean as the speed a user sees. SixCat's decode prompt drafts far better than real text, so its
 number is a ceiling. An earlier SixCat run with 1, 2, 4 and 8 requests in flight measured the same ~35.9 tok/s
 aggregate at each level: requests queue, so `bench sixcat` stops the concurrency curve at one.
 
-The pinned reference is a token-for-token regression check. A drafted reply takes one of two prefill paths: the
-first request for a prompt after a boot prefills it whole ("fresh"), and later ones resume from the prompt cache.
-The two paths differ in their low-order bits, so the reference pins both, plus the `"draft": false` reply. A change
-meant to keep outputs (decode-only work) must reproduce all three. A change that alters prefill numerics re-pins,
-with `bench pin` on a fresh boot, only after the needle test and `bench smoke` pass, and its commit says so. The
-reference above reproduced exactly on a second boot.
+The pinned reference is a token-for-token regression check. A change meant to keep outputs (decode-only work) must
+reproduce it. A change that alters prefill numerics re-pins with `bench pin`, only after the needle test and
+`bench smoke` pass, and its commit says so.
+
+v1.0.1 ([record](bench/records/2026-10-10-v1.0.1-baseline/)) measured a 41.43 tok/s mean, but its drafted replies
+were not the `"draft": false` ones: they parted at token 0 to 94. They were other texts, and these happened to draft
+better. v1.0.2 makes drafted and serial replies agree. A decode round costs the same (code 76 ms vs 78 ms,
+chat_multiturn 69 ms vs 72 ms), and on the six prompts' serial texts DFlash2 accepts fewer tokens per round.
 
 ### v1.0.0 run (2026-10-10, this repo's defaults)
 
@@ -345,12 +350,6 @@ prose, 35–44 on code and structured output, and up to 65 on highly predictable
 
 - One request decodes at a time. Concurrent requests queue (each is answered correctly).
 - Prose decode depends on the text: 30–37 tok/s across the prompts above.
-- A drafted reply does not always equal the `"draft": false` reply for the same prompt. The decode loop is
-  row-exact: a drafted request with `"tf_policy": "0"` (no drafts) gives the same ids as one with drafts. The
-  difference is in prefill: a first drafted request (whole prompt, cache snapshot kept at its last token), a later
-  one resumed from that snapshot, and a `"draft": false` request reach first-token logits that differ in the
-  low-order bits, so greedy replies part ways at token 0 to 94 on the six benchmark prompts. Each path is
-  deterministic, so the benchmark reference pins all three.
 - A stop string ends the streamed text at once, but the request finishes only when decoding reaches an end token or
   `max_tokens`: both ranks decode to the end.
 - The `test_exl3_experts` bit-identity checks fail identically on the pre-graft tree (last-ulp differences in the
