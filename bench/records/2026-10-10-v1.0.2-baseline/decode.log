@@ -1,0 +1,44 @@
+[PASS] warm-up request
+[PASS] code: prompt ids == reference - first diff None
+[PASS] code: serial ids == pinned serial - n 512, first diff None, tok/s 24.62
+[PASS] code rep 0: drafted ids == pinned serial - n 512, cached 0, first diff None, tok/s 39.66, tokens/round 3.006
+[PASS] code rep 1: drafted ids == pinned serial - n 512, cached 192, first diff None, tok/s 39.71, tokens/round 3.006
+[PASS] code rep 2: drafted ids == pinned serial - n 512, cached 192, first diff None, tok/s 39.83, tokens/round 3.006
+[PASS] prose: prompt ids == reference - first diff None
+[PASS] prose: serial ids == pinned serial - n 512, first diff None, tok/s 24.61
+[PASS] prose rep 0: drafted ids == pinned serial - n 512, cached 0, first diff None, tok/s 31.83, tokens/round 2.193
+[PASS] prose rep 1: drafted ids == pinned serial - n 512, cached 192, first diff None, tok/s 32.03, tokens/round 2.193
+[PASS] prose rep 2: drafted ids == pinned serial - n 512, cached 192, first diff None, tok/s 31.93, tokens/round 2.193
+[PASS] math: prompt ids == reference - first diff None
+[PASS] math: serial ids == pinned serial - n 448, first diff None, tok/s 24.55
+[PASS] math rep 0: drafted ids == pinned serial - n 448, cached 0, first diff None, tok/s 55.77, tokens/round 4.705
+[PASS] math rep 1: drafted ids == pinned serial - n 448, cached 224, first diff None, tok/s 55.94, tokens/round 4.705
+[PASS] math rep 2: drafted ids == pinned serial - n 448, cached 224, first diff None, tok/s 55.85, tokens/round 4.705
+[PASS] chat_explain: prompt ids == reference - first diff None
+[PASS] chat_explain: serial ids == pinned serial - n 512, first diff None, tok/s 24.54
+[PASS] chat_explain rep 0: drafted ids == pinned serial - n 512, cached 0, first diff None, tok/s 34.81, tokens/round 2.555
+[PASS] chat_explain rep 1: drafted ids == pinned serial - n 512, cached 224, first diff None, tok/s 34.5, tokens/round 2.555
+[PASS] chat_explain rep 2: drafted ids == pinned serial - n 512, cached 224, first diff None, tok/s 34.85, tokens/round 2.555
+[PASS] chat_multiturn: prompt ids == reference - first diff None
+[PASS] chat_multiturn: serial ids == pinned serial - n 512, first diff None, tok/s 24.53
+[PASS] chat_multiturn rep 0: drafted ids == pinned serial - n 512, cached 0, first diff None, tok/s 35.14, tokens/round 2.422
+[PASS] chat_multiturn rep 1: drafted ids == pinned serial - n 512, cached 320, first diff None, tok/s 35.14, tokens/round 2.422
+[PASS] chat_multiturn rep 2: drafted ids == pinned serial - n 512, cached 320, first diff None, tok/s 34.98, tokens/round 2.422
+[PASS] long_doc: prompt ids == reference - first diff None
+[PASS] long_doc: serial ids == pinned serial - n 512, first diff None, tok/s 23.79
+[PASS] long_doc rep 0: drafted ids == pinned serial - n 512, cached 0, first diff None, tok/s 39.75, tokens/round 3.135
+[PASS] long_doc rep 1: drafted ids == pinned serial - n 512, cached 3008, first diff None, tok/s 39.96, tokens/round 3.135
+[PASS] long_doc rep 2: drafted ids == pinned serial - n 512, cached 3008, first diff None, tok/s 39.95, tokens/round 3.135
+
+| prompt | tokens | server tok/s (median) | client tok/s | tokens/round | TTFT s (uncached) | serial tok/s | exact |
+|---|---:|---:|---:|---:|---:|---:|---|
+| code | 221 | 39.71 | 39.71 | 3.01 | 0.78 | 24.62 | yes |
+| prose | 214 | 31.93 | 31.93 | 2.19 | 0.77 | 24.61 | yes |
+| math | 228 | 55.85 | 55.85 | 4.71 | 0.81 | 24.55 | yes |
+| chat_explain | 242 | 34.81 | 34.81 | 2.56 | 0.85 | 24.54 | yes |
+| chat_multiturn | 342 | 35.14 | 35.14 | 2.42 | 1.12 | 24.53 | yes |
+| long_doc | 3011 | 39.95 | 39.95 | 3.13 | 8.24 | 23.79 | yes |
+
+mean over all 6 prompts: drafted 39.57 tok/s, serial 24.44 tok/s
+wrote /home/spark/redsnow/bench-runs/2026-10-10-221222-all/decode.json
+ALL CHECKS PASSED: 31/31
