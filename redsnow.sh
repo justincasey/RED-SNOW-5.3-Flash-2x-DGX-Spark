@@ -9,7 +9,8 @@
 #   ./redsnow.sh download     model pack, BF16 head shard and (DRAFTS=on) the DFlash2 drafter, on both nodes
 #   ./redsnow.sh view         build the serve view (pack + BF16 lm_head) on both nodes
 #   ./redsnow.sh start        launch both ranks and wait until the API answers
-#   ./redsnow.sh stop | restart | status | smoke | logs [0|1] | bench [arms]
+#   ./redsnow.sh stop | restart | status | smoke | logs [0|1]
+#   ./redsnow.sh bench [smoke|decode|pin|long|sixcat|all]   on rank 0; results under bench/runs/ (default all)
 #
 # Configuration: environment > .env > defaults below. .env.example documents every key.
 set -euo pipefail
@@ -47,8 +48,8 @@ BASE_DIR="${BASE_DIR:-}"                                 # empty: $HOME/redsnow 
 MODELS_DIR="${MODELS_DIR:-}"                             # empty: $BASE_DIR/models
 
 TF_REPO="${TF_REPO:-https://github.com/justincasey/TensorFold.git}"
-TF_REF="${TF_REF:-redsnow-v1.0.0}"
-TF_COMMIT="${TF_COMMIT:-a7e0f0970996de310186c798a69f78c7199cc2d7}"   # install refuses any other commit
+TF_REF="${TF_REF:-redsnow-v1.0.1}"
+TF_COMMIT="${TF_COMMIT:-67e393f8e76ef222515fa21d07a5742a2b5b135d}"   # install refuses any other commit
 
 PACK_REPO="${PACK_REPO:-vcruz305/RED-SNOW-5.3-FLASH-EXL3-SAGE-4.91bpw}"
 PACK_REV="${PACK_REV:-f6b8963784254095a54944f2963b2925fcf4b199}"
@@ -59,6 +60,8 @@ HEAD_SHA256="${HEAD_SHA256:-730c19fa750f46a3803a478ac7e698af21431e8426c40417bc8a
 DRAFTER_REPO="${DRAFTER_REPO:-incoai/GLM-5.3-Flash-DFlash2}"
 DRAFTER_REV="${DRAFTER_REV:-bf582e4eacc1810f76656d1811693ff6c6737d2a}"
 ACCEPT_DFLASH2_LICENSE="${ACCEPT_DFLASH2_LICENSE:-no}"   # yes: you accept CC BY-NC-ND 4.0 (non-commercial)
+SIXCAT_REPO="${SIXCAT_REPO:-https://github.com/vcruz305/sixcat-eval.git}"
+SIXCAT_COMMIT="${SIXCAT_COMMIT:-841f90a4843745675c771ac4b5ae9205049b42c0}"   # v0.7.0
 
 SERVED_NAME="${SERVED_NAME:-RED-SNOW-5.3-Flash}"
 HOST="${HOST:-0.0.0.0}"; PORT="${PORT:-8080}"
@@ -378,11 +381,69 @@ cmd_logs() {
   remote "$r" 'tail -n "${N:-60}" "$LOG_DIR/rank$R.log"' LOG_DIR="$LOG_DIR" R="$r" N="${N:-60}"
 }
 
+# Runs on rank 0 in $BENCH_DIR (bench/ shipped there); every step logs to $OUT/<step>.log, `all` goes on past a failure.
+BENCH_SCRIPT='
+cd "$BENCH_DIR"; mkdir -p "$OUT"; export API_KEY
+rc=0
+step() {
+  local name=$1; shift
+  echo "== $name"
+  if "$@" 2>&1 | tee "$OUT/$name.log"; then :; else rc=1; echo "== $name FAILED"; fi
+}
+api=(--base "$BASE_URL" --model "$SERVED_NAME")
+do_smoke()  { step smoke python3 bench_v1.py --smoke "${api[@]}" --out "$OUT/smoke.json"; }
+do_decode() { step decode python3 bench_v1.py --reps "$REPS" "${api[@]}" --out "$OUT/decode.json"; }
+do_pin() {
+  local tok tpl eng
+  tok=$(sha256sum "$SERVE_DIR/tokenizer.json" | cut -c1-64); tpl=$(sha256sum "$SERVE_DIR/chat_template.jinja" | cut -c1-64)
+  eng=$(git -C "$SRC_DIR" rev-parse HEAD)
+  step pin python3 bench_v1.py --ids self --ref sweep6_prompts.json --reps "$REPS" "${api[@]}" --out "$OUT/pin.json" \
+    --pin "$OUT/redsnow_reference.json" --meta engine_commit="$eng" --meta pack_rev="$PACK_REV" \
+    --meta drafter_rev="$DRAFTER_REV" --meta context="$CONTEXT" --meta kv_dtype="$KV_DTYPE" \
+    --meta tokenizer_sha256="$tok" --meta chat_template_sha256="$tpl"
+}
+do_long() {
+  [[ -f longctx_prompts.json ]] || step prompts "$VENV/bin/python" make_prompts.py "$SERVE_DIR" longctx_prompts.json
+  step long python3 longctx_run.py "$BASE_URL" "$SERVED_NAME" longctx_prompts.json "$OUT/longctx.json" "$LONG"
+}
+do_sixcat() {
+  local sv="$BASE_DIR/sixcat-venv"
+  if [[ "$(cat "$sv/.commit" 2>/dev/null)" != "$SIXCAT_COMMIT" ]]; then
+    python3 -m venv "$sv" && "$sv/bin/pip" install -q "git+$SIXCAT_REPO@$SIXCAT_COMMIT" && echo "$SIXCAT_COMMIT" > "$sv/.commit"
+  fi
+  # the server decodes one request at a time (C>1 only queues: flat 35.9 tok/s aggregate at C=1..8 on 2026-10-10),
+  # so the curve stops at C=1 and the three profiles fit the budget
+  step sixcat "$sv/bin/python" -m sixcat speed --base-url "$BASE_URL" --model "$SERVED_NAME" --api-key "${API_KEY:-none}" \
+    --policy strict --thinking off --candidates 1 --max-seconds 1200 --out "$OUT/sixcat.json"
+}
+case $WHAT in
+  all) do_smoke; do_decode; do_long; do_sixcat ;;
+  *)   "do_$WHAT" ;;
+esac
+exit $rc'
+
 cmd_bench() {
-  need_hosts
-  local arms=${1:-}
-  ssh "${SSH_OPTS[@]}" "$RANK0" python3 - --url "http://127.0.0.1:$PORT" --model "$SERVED_NAME" \
-    ${API_KEY:+--api-key "$API_KEY"} ${arms:+--arms "$arms"} < "$ROOT/bench/bench.py"
+  resolve_paths
+  local what=${1:-all}
+  case $what in smoke|decode|pin|long|sixcat|all) ;; *) die "bench takes smoke, decode, pin, long, sixcat or all" ;; esac
+  [[ $what =~ ^(pin|long|sixcat)$ || -f "$ROOT/bench/redsnow_reference.json" ]] \
+    || die "bench/redsnow_reference.json is missing: ./redsnow.sh bench pin writes it"
+  local stamp bdir out rc=0
+  stamp="$(date +%Y-%m-%d-%H%M%S)-$what"; bdir="$BASE_DIR/bench"; out="$BASE_DIR/bench-runs/$stamp"
+  log "bench $what on rank 0; results in bench/runs/$stamp"
+  COPYFILE_DISABLE=1 tar -C "$ROOT/bench" --exclude ./records --exclude ./runs --exclude ./books \
+    --exclude ./longctx_prompts.json -cf - . | ssh "${SSH_OPTS[@]}" "$RANK0" "mkdir -p '$bdir' && tar -C '$bdir' -xf -"
+  remote 0 "$BENCH_SCRIPT" $(paths_kv) BENCH_DIR="$bdir" OUT="$out" WHAT="$what" REPS="${REPS:-3}" \
+    LONG="${LONG:-book_128k}" BASE_URL="http://127.0.0.1:$PORT/v1" SERVED_NAME="$SERVED_NAME" API_KEY="$API_KEY" \
+    PACK_REV="$PACK_REV" DRAFTER_REV="$DRAFTER_REV" CONTEXT="$CONTEXT" KV_DTYPE="$KV_DTYPE" \
+    SIXCAT_REPO="$SIXCAT_REPO" SIXCAT_COMMIT="$SIXCAT_COMMIT" || rc=$?
+  mkdir -p "$ROOT/bench/runs/$stamp"
+  ssh "${SSH_OPTS[@]}" "$RANK0" "tar -C '$out' -cf - ." | tar -C "$ROOT/bench/runs/$stamp" -xf -
+  if [[ $what == pin && $rc == 0 ]]; then
+    cp "$ROOT/bench/runs/$stamp/redsnow_reference.json" "$ROOT/bench/redsnow_reference.json"
+    log "pinned bench/redsnow_reference.json"
+  fi
+  return "$rc"
 }
 
 case "${1:-help}" in
@@ -398,7 +459,7 @@ case "${1:-help}" in
   status)    cmd_status ;;
   smoke)     cmd_smoke ;;
   logs)      cmd_logs "${2:-0}" ;;
-  bench)     cmd_bench "${2:-}" ;;
-  help|-h|--help) sed -n '2,13p' "$0" | sed 's/^# \{0,1\}//' ;;
+  bench)     cmd_bench "${2:-all}" ;;
+  help|-h|--help) sed -n '2,14p' "$0" | sed 's/^# \{0,1\}//' ;;
   *) die "unknown command: $1 (./redsnow.sh help)" ;;
 esac
