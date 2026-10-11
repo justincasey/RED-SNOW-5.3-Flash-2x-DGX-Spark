@@ -1,0 +1,235 @@
+{
+ "thinking_off": {
+  "ids": [
+   3925,
+   154827
+  ],
+  "n": 2,
+  "finish": "stop",
+  "usage": {
+   "prompt_tokens": 190,
+   "completion_tokens": 2,
+   "total_tokens": 192,
+   "prompt_tokens_details": {
+    "cached_tokens": 0
+   },
+   "completion_tokens_details": {
+    "reasoning_tokens": 0
+   }
+  },
+  "stats": {
+   "prefill_s": 0.7157781090354547,
+   "cached": 0,
+   "decode_s": 0.08242108800914139,
+   "rounds": 1,
+   "min_rows": 6,
+   "tokens_per_round": 1.0,
+   "sha256": "0adafa51f1d7f111",
+   "drafted": 5,
+   "accepted": 0,
+   "stages_ms": {
+    "draft": 4.4,
+    "forward": 62.7,
+    "sample": 0.8,
+    "commit": 13.6
+   },
+   "policy": "auto",
+   "drafts": true,
+   "token_sha": "694aab7656bc",
+   "tok_s": 12.13
+  },
+  "content": "OK",
+  "reasoning": "",
+  "chunks": 1,
+  "both_in_one_chunk": 0,
+  "max_gap_s": null,
+  "ttft_s": 0.7305771189276129,
+  "total_s": 0.8143598430324346,
+  "client_tok_s": null
+ },
+ "thinking_on": {
+  "ids": [
+   16360,
+   46163,
+   25,
+   220,
+   99419,
+   353,
+   220,
+   99619,
+   284,
+   220,
+   101294,
+   16,
+   13,
+   9255,
+   279,
+   1372,
+   13,
+   154842,
+   101294,
+   16,
+   154827
+  ],
+  "n": 21,
+  "finish": "stop",
+  "usage": {
+   "prompt_tokens": 194,
+   "completion_tokens": 21,
+   "total_tokens": 215,
+   "prompt_tokens_details": {
+    "cached_tokens": 0
+   },
+   "completion_tokens_details": {
+    "reasoning_tokens": 18
+   }
+  },
+  "stats": {
+   "prefill_s": 0.718234947999008,
+   "cached": 0,
+   "decode_s": 0.47185189300216734,
+   "rounds": 6,
+   "min_rows": 3,
+   "tokens_per_round": 3.333,
+   "sha256": "a1a7d9d34f6aa81f",
+   "drafted": 24,
+   "accepted": 14,
+   "stages_ms": {
+    "draft": 28.9,
+    "forward": 437.3,
+    "sample": 4.2,
+    "commit": 0.3
+   },
+   "policy": "auto",
+   "drafts": true,
+   "token_sha": "c25b0218dbfe",
+   "tok_s": 42.39
+  },
+  "content": "391",
+  "reasoning": "Simple multiplication: 17 * 23 = 391. Output the number.",
+  "chunks": 7,
+  "both_in_one_chunk": 0,
+  "max_gap_s": 0.08844878803938627,
+  "ttft_s": 0.7237239899113774,
+  "total_s": 1.196717934915796,
+  "client_tok_s": 42.457502481225575
+ },
+ "checks": [
+  {
+   "check": "/v1/models lists the served name",
+   "ok": true,
+   "detail": "['RED-SNOW-5.3-Flash']"
+  },
+  {
+   "check": "/health 200",
+   "ok": true,
+   "detail": "{\"ok\": true, \"backend\": \"tensorfold\", \"busy\": false, \"requests_running\": 0, \"requests_total\": 0, \"prompt_tokens_total\": 0, \"completion_tokens_total\": 0, \"prefill_seconds_total\": 0, \"decode_seconds_tot"
+  },
+  {
+   "check": "/tokenize code thinking on == pinned prompt ids",
+   "ok": true,
+   "detail": "221 vs 221 tokens, first diff None"
+  },
+  {
+   "check": "/tokenize prose thinking on == pinned prompt ids",
+   "ok": true,
+   "detail": "214 vs 214 tokens, first diff None"
+  },
+  {
+   "check": "/tokenize math thinking on == pinned prompt ids",
+   "ok": true,
+   "detail": "228 vs 228 tokens, first diff None"
+  },
+  {
+   "check": "/tokenize chat_explain thinking on == pinned prompt ids",
+   "ok": true,
+   "detail": "242 vs 242 tokens, first diff None"
+  },
+  {
+   "check": "/tokenize chat_multiturn thinking on == pinned prompt ids",
+   "ok": true,
+   "detail": "342 vs 342 tokens, first diff None"
+  },
+  {
+   "check": "/tokenize long_doc thinking on == pinned prompt ids",
+   "ok": true,
+   "detail": "3011 vs 3011 tokens, first diff None"
+  },
+  {
+   "check": "thinking off prompt ends <|assistant|>",
+   "ok": true,
+   "detail": "[770, 13, 154828]"
+  },
+  {
+   "check": "thinking on prompt ends <|assistant|><think>",
+   "ok": true,
+   "detail": "[13, 154828, 154841]"
+  },
+  {
+   "check": "thinking off: no error",
+   "ok": true,
+   "detail": ""
+  },
+  {
+   "check": "thinking off: finish stop at a turn-end id",
+   "ok": true,
+   "detail": "finish stop, last id [154827], n 2"
+  },
+  {
+   "check": "thinking off: empty reasoning, content has OK",
+   "ok": true,
+   "detail": "content 'OK'"
+  },
+  {
+   "check": "thinking off: no markup leak",
+   "ok": true,
+   "detail": "OK"
+  },
+  {
+   "check": "thinking on: no error",
+   "ok": true,
+   "detail": ""
+  },
+  {
+   "check": "thinking on: reasoning non-empty",
+   "ok": true,
+   "detail": "56 chars"
+  },
+  {
+   "check": "thinking on: no markup leak in either channel",
+   "ok": true,
+   "detail": ""
+  },
+  {
+   "check": "thinking on: stops at a turn-end id with an answer",
+   "ok": true,
+   "detail": "content '391'"
+  },
+  {
+   "check": "thinking on: streams round by round",
+   "ok": true,
+   "detail": "7 deltas for 21 tokens, largest gap 0.088 s"
+  },
+  {
+   "check": "drafted ids == \"draft\": false ids",
+   "ok": true,
+   "detail": "n 9 / 9, first diff None"
+  },
+  {
+   "check": "default request drafts with DFlash2",
+   "ok": true,
+   "detail": "policy auto, drafted 8, accepted 6, tokens/round 4.0"
+  },
+  {
+   "check": "invalid tf_policy refused",
+   "ok": true,
+   "detail": "{'message': \"draft policy 'bogus': expected auto[:E:EVERY:MARGIN], 0, N, a[:LOW:HIGH], cN:P, t<FANOUT>d<DEPTH>, or one of these after f (N from 1 to 7, FANOUT f"
+  }
+ ],
+ "ok": true,
+ "base": "http://127.0.0.1:8080/v1",
+ "model": "RED-SNOW-5.3-Flash",
+ "ids_mode": null,
+ "started": 1791680284.4881954,
+ "wall_s": 3.9
+}

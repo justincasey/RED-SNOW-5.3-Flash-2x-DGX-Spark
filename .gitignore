@@ -1,2 +1,6 @@
 .env
 __pycache__/
+.work/
+bench/books/
+bench/longctx_prompts.json
+bench/runs/

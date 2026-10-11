@@ -1,0 +1,99 @@
+
+=== DECODE PROFILE ===
+workload: prompt_words=32 max_tokens=512
+purpose: short prompt + long generation to expose sustained decode speed
+CONCURRENCY CURVE (unscored synthetic probes)
+   C      ok  usable    agg t/s     req/s   TTFT p95    dec p50
+----------------------------------------------------------------------------
+   1 4/4         yes      58.90      0.12   1385.0ms      67.39
+----------------------------------------------------------------------------
+aggregate output tps = level-wall throughput; includes prefill, queueing, and failure wall time
+max usable concurrency: 1 (min success=95%)
+recommended concurrency: 1 (usable peak=1, confidence=low)
+selection: smallest concurrency reaching at least 90% of measured peak aggregate_output_tps; lower concurrency wins near-ties to reduce latency and KV pressure
+
+SPEED CONFIRMATION @ concurrency=1 (32/32 successful)
+aggregate output tps (includes prefill/queue): 59.65 tok/s
+request rate: 0.12 req/s
+DECODE — per-stream sustained generation:
+  p50=67.23  p95=67.80  max=68.13 tok/s
+  best-sustained decode (p90): 67.74 tok/s
+PREFILL — client-observed effective prompt ingestion:
+  p50=295.06  p95=296.48  max=297.03 tok/s (includes network/queue)
+client TTFT: p50=984.0ms p95=990.5ms p99=1000.0ms
+E2E latency: p50=8586.6ms p95=8638.1ms p99=8662.7ms
+TPOT: p50=14.9ms p95=15.0ms p99=15.0ms
+server prefill: p5=n/a p50=n/a tok/s
+server decode: p5=n/a p50=n/a tok/s
+server metrics: unavailable for this route — the route exposes /v1/models but no llama.cpp /props and returned no per-request provider timing metrics
+NOTE: p99 has <100 request samples; use --samples 100+ for stronger tail-latency evidence.
+
+=== BALANCED PROFILE ===
+workload: prompt_words=256 max_tokens=128
+purpose: mixed prompt/generation workload for realistic serving throughput
+CONCURRENCY CURVE (unscored synthetic probes)
+   C      ok  usable    agg t/s     req/s   TTFT p95    dec p50
+----------------------------------------------------------------------------
+   1 4/4         yes      35.85      0.28   1696.0ms      67.55
+----------------------------------------------------------------------------
+aggregate output tps = level-wall throughput; includes prefill, queueing, and failure wall time
+max usable concurrency: 1 (min success=95%)
+recommended concurrency: 1 (usable peak=1, confidence=low)
+selection: smallest concurrency reaching at least 90% of measured peak aggregate_output_tps; lower concurrency wins near-ties to reduce latency and KV pressure
+
+SPEED CONFIRMATION @ concurrency=1 (32/32 successful)
+aggregate output tps (includes prefill/queue): 36.03 tok/s
+request rate: 0.28 req/s
+DECODE — per-stream sustained generation:
+  p50=67.90  p95=68.34  max=68.72 tok/s
+  best-sustained decode (p90): 68.20 tok/s
+PREFILL — client-observed effective prompt ingestion:
+  p50=328.22  p95=329.85  max=330.21 tok/s (includes network/queue)
+client TTFT: p50=1679.4ms p95=1687.7ms p99=1689.8ms
+E2E latency: p50=3550.1ms p95=3570.6ms p99=3572.6ms
+TPOT: p50=14.7ms p95=14.9ms p99=14.9ms
+server prefill: p5=n/a p50=n/a tok/s
+server decode: p5=n/a p50=n/a tok/s
+server metrics: unavailable for this route — the route exposes /v1/models but no llama.cpp /props and returned no per-request provider timing metrics
+NOTE: p99 has <100 request samples; use --samples 100+ for stronger tail-latency evidence.
+
+=== PREFILL PROFILE ===
+workload: prompt_words=2048 max_tokens=32
+purpose: long prompt + short generation to expose prompt-ingestion speed
+CONCURRENCY CURVE (unscored synthetic probes)
+   C      ok  usable    agg t/s     req/s   TTFT p95    dec p50
+----------------------------------------------------------------------------
+   1 4/4         yes       4.27      0.13   7004.8ms      63.89
+----------------------------------------------------------------------------
+aggregate output tps = level-wall throughput; includes prefill, queueing, and failure wall time
+max usable concurrency: 1 (min success=95%)
+recommended concurrency: 1 (usable peak=1, confidence=low)
+selection: smallest concurrency reaching at least 90% of measured peak aggregate_output_tps; lower concurrency wins near-ties to reduce latency and KV pressure
+
+SPEED CONFIRMATION @ concurrency=1 (32/32 successful)
+aggregate output tps (includes prefill/queue): 4.28 tok/s
+request rate: 0.13 req/s
+DECODE — per-stream sustained generation:
+  p50=64.36  p95=65.76  max=66.49 tok/s
+  best-sustained decode (p90): 65.58 tok/s
+PREFILL — client-observed effective prompt ingestion:
+  p50=377.60  p95=378.32  max=378.67 tok/s (includes network/queue)
+client TTFT: p50=6998.3ms p95=7013.4ms p99=7022.4ms
+E2E latency: p50=7478.9ms p95=7491.7ms p99=7494.2ms
+TPOT: p50=15.5ms p95=15.7ms p99=15.8ms
+server prefill: p5=n/a p50=n/a tok/s
+server decode: p5=n/a p50=n/a tok/s
+server metrics: unavailable for this route — the route exposes /v1/models but no llama.cpp /props and returned no per-request provider timing metrics
+NOTE: p99 has <100 request samples; use --samples 100+ for stronger tail-latency evidence.
+
+SIXCAT SPEED SUITE — workload-specific headlines
+----------------------------------------------------------------------------
+DECODE (single-stream C=1): p50=67.39 p95=67.80 max=67.85 best-sustained(p90)=67.75 tok/s
+DECODE serving knee: aggregate=59.65 tok/s @ C=1 (includes prefill/queue)
+BALANCED: aggregate=36.03 tok/s (includes prefill/queue), TTFT p95=1687.7ms @ C=1
+PREFILL (single-stream C=1): p50=377.54 p95=378.25 max=378.38 effective tok/s
+PREFILL serving knee: aggregate=4.28 tok/s @ C=1 (includes decode/queue)
+----------------------------------------------------------------------------
+Decode, balanced, and prefill are intentionally separate workloads; do not compare their aggregate TPS as the same metric.
+
+wrote /home/spark/redsnow/bench-runs/2026-10-10-195803-all/sixcat.json

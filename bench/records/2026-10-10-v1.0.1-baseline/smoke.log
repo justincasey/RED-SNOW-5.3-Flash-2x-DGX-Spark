@@ -1,0 +1,24 @@
+[PASS] /v1/models lists the served name - ['RED-SNOW-5.3-Flash']
+[PASS] /health 200 - {"ok": true, "backend": "tensorfold", "busy": false, "requests_running": 0, "requests_total": 0, "prompt_tokens_total": 0, "completion_tokens_total": 0, "prefill_seconds_total": 0, "decode_seconds_tot
+[PASS] /tokenize code thinking on == pinned prompt ids - 221 vs 221 tokens, first diff None
+[PASS] /tokenize prose thinking on == pinned prompt ids - 214 vs 214 tokens, first diff None
+[PASS] /tokenize math thinking on == pinned prompt ids - 228 vs 228 tokens, first diff None
+[PASS] /tokenize chat_explain thinking on == pinned prompt ids - 242 vs 242 tokens, first diff None
+[PASS] /tokenize chat_multiturn thinking on == pinned prompt ids - 342 vs 342 tokens, first diff None
+[PASS] /tokenize long_doc thinking on == pinned prompt ids - 3011 vs 3011 tokens, first diff None
+[PASS] thinking off prompt ends <|assistant|> - [770, 13, 154828]
+[PASS] thinking on prompt ends <|assistant|><think> - [13, 154828, 154841]
+[PASS] thinking off: no error
+[PASS] thinking off: finish stop at a turn-end id - finish stop, last id [154827], n 2
+[PASS] thinking off: empty reasoning, content has OK - content 'OK'
+[PASS] thinking off: no markup leak - OK
+[PASS] thinking on: no error
+[PASS] thinking on: reasoning non-empty - 56 chars
+[PASS] thinking on: no markup leak in either channel
+[PASS] thinking on: stops at a turn-end id with an answer - content '391'
+[PASS] thinking on: streams round by round - 7 deltas for 21 tokens, largest gap 0.088 s
+[PASS] drafted ids == "draft": false ids - n 9 / 9, first diff None
+[PASS] default request drafts with DFlash2 - policy auto, drafted 8, accepted 6, tokens/round 4.0
+[PASS] invalid tf_policy refused - {'message': "draft policy 'bogus': expected auto[:E:EVERY:MARGIN], 0, N, a[:LOW:HIGH], cN:P, t<FANOUT>d<DEPTH>, or one of these after f (N from 1 to 7, FANOUT f
+wrote /home/spark/redsnow/bench-runs/2026-10-10-195803-all/smoke.json
+ALL CHECKS PASSED: 22/22
