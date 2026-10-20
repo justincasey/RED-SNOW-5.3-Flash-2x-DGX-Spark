@@ -137,109 +137,94 @@ sudo nmcli con add type ethernet ifname enp1s0f1np1 con-name qsfp \
   ipv4.method manual ipv4.addresses 10.100.0.2/24 802-3-ethernet.mtu 9000
 ```
 
-If detection picks the wrong pair, pin all six `RANK0_IF`/`RANK0_HCA`/`RANK0_FABRIC_IP`/`RANK1_*` keys in `.env`.
-The rendezvous port (29551) and the link are not authenticated: keep the link private.
+If detection picks the wrong pair, pin all six `RANK0_IF`/`RANK0_HCA`/`RANK0_FABRIC_IP`/`RANK1_*` keys in `.env`
+(python engine; the native launcher uses every rail it finds on the shared subnet). The rendezvous port (native 29741,
+python 29551) and the link are not authenticated: keep the link private.
 
 ## Configuration
 
-Precedence: environment, then `.env`, then the defaults in `redsnow.sh`. `.env.example` lists every key.
+Precedence: environment, then `.env`, then the defaults (`redsnow.sh`, and for the native engine
+`native/engine.env`). `.env.example` lists every key.
 
 | Key | Default | Meaning |
 |---|---|---|
 | `RANK0`, `RANK1` | (required) | ssh targets; rank 0 serves the API |
+| `ENGINE` | `native` | `native`: the Zig TensorFold 1.1 engine; `python`: v1.0.2's Python engine ([below](#python-engine-v102)) |
 | `DRAFTS` | `on` | `on`: DFlash2 drafting; `off`: serial decode, no drafter download |
 | `ACCEPT_DFLASH2_LICENSE` | `no` | must be `yes` to download the drafter |
 | `SERVED_NAME` | `RED-SNOW-5.3-Flash` | model id clients send |
 | `HOST`, `PORT` | `0.0.0.0`, `8080` | rank 0's API address; rank 1 takes `PORT+1` on localhost |
 | `API_KEY` | (empty) | require this bearer key |
-| `CONTEXT` | `131072` | prompt + reply window, in tokens |
+| `PARALLEL` | `2` | streams decoding at once ([Streams vs context](#streams-vs-context)); python: 1 |
+| `CONTEXT` | `274432` | prompt + reply window per stream, in tokens; python: `131072` |
 | `KV_DTYPE` | `fp8` | latent KV cache: `fp8` (e4m3, per-token scales) or `bf16` |
 | `BASE_DIR`, `MODELS_DIR` | `~/redsnow`, `~/redsnow/models` | install and model locations, the same on both nodes |
-| `MEMORY_RESERVE_GIB` | `2` | memory each rank leaves free |
-| `NCCL_MAX_NCHANNELS` | `4` | fewer NCCL channels leave ~1.5 GiB more for the cache |
-| `WAIT_TIMEOUT` | `900` | seconds `start` waits for the API |
+| `MEMORY_RESERVE_GIB` | `6` | memory each rank leaves free; python: `2` |
+| `NCCL_MAX_NCHANNELS` | (NCCL's) | python: `4` (fewer channels leave ~1.5 GiB more for the cache) |
+| `WAIT_TIMEOUT` | `900` | seconds `start` waits for the API (native: up to `READY_S`, 1200) |
 
-The engine settings below are the measured serving path. They are on by default, and `.env` can override each one.
-Any other `TF_GLM_*`, `TF_MOE*` or `TENSORFOLD_*` variable you set reaches both ranks too.
+Any `TF_GLM_*`, `TENSORFOLD_*` or `NCCL_*` variable you set reaches both ranks. The native engine's measured serving
+path needs none; its switches (all on by default) are documented in the engine fork's GLM CUDA docs.
 
-| Engine setting | Default | Effect |
-|---|---|---|
-| `TF_GLM_EXL3_LOADS` | `nc2` | MoE decode kernel reads expert weights with 16-byte no-allocate loads, two steps ahead: +4.5% decode |
-| `TF_GLM_HC_SPLIT` | `1` | prefill: the hyper-connection glue of a prompt chunk is split between the ranks |
-| `TF_GLM_PREFILL_OVERLAP` | `2` | prefill: the next block's front runs under the glue exchanges |
-| `TF_GLM_KDA_CHUNKED` | `1` | prefill: KDA prompt chunks in chunked (WY) form. The three prefill settings together give 6–9% faster TTFT at 4K–16K |
-| `TF_GLM_MTP` | `0` | the checkpoint's own MTP head stays unloaded; DFlash2 drafts every request |
+## Streams vs context
 
-## Native engine (TensorFold 1.1, in development)
+The native engine sets aside a fixed number of streams (requests decoding at once), each with its own context
+window. Every stream's KV cache is reserved at boot, so more streams means a shorter window per stream. Memory that
+the streams leave free becomes the prompt cache, which holds earlier prompts so that chat follow-ups skip prefill.
 
-A second serving path runs RED-SNOW on native TensorFold 1.1 (Zig + CUDA) instead of the Python engine above. Engine:
-[`justincasey/TensorFold` tag `redsnow-native-v1.0.0`](https://github.com/justincasey/TensorFold/tree/redsnow-native-v1.0.0)
-(`76548777`: TensorFold v1.1.0 plus this project's 55 commits; development continues on branch `redsnow-native`).
-Against v1.0.2 on the same pair it measured:
-- prefill 1,507 / 1,657 tok/s at 8K / 32K;
-- decode 45.1 tok/s drafted;
-- 8 concurrent chats at 99 tok/s in total;
-- boot in ~90 s.
+The default is 2 streams with a 274,432-token window (67 × 4,096; the model allows 1,048,576). Set `PARALLEL` and
+`CONTEXT` in `.env`, or for one boot:
 
 ```bash
-git clone -b redsnow-native-v1.0.0 https://github.com/justincasey/TensorFold.git ~/tf-native
-export TF_SRC=~/tf-native RANK0=<rank 0 ssh host> RANK1=<rank 1 ssh host> RANK1_LAN=<rank 1 LAN address>
-native/cluster.sh setup && native/cluster.sh sync && native/cluster.sh build && native/cluster.sh start
-python3 bench/native/run.py --base http://<rank 0>:8080          # prefill, TTFT, decode, C=4
-python3 bench/native/conc.py --base http://<rank 0>:8080         # C sweep, mixed load, open-loop trace
+PARALLEL=8 CONTEXT=65536 ./redsnow.sh start
 ```
 
-The launcher expects:
-- the model at `/home/spark/models/RED-SNOW-5.3-FLASH-EXL3-SAGE-4.91bpw`;
-- the drafter at `/home/spark/models/GLM-5.3-Flash-DFlash2`.
-
-`MODEL`, `DRAFTER` and `REMOTE` override these paths. `redsnow.sh` is unchanged.
-
-## Streams vs context (native engine)
-
-The native TensorFold 1.1 port (`native/cluster.sh`, in development) sets aside a fixed number of streams (requests
-decoding at once), each with its own context window. Every stream's KV cache is reserved at boot, so more streams
-means a shorter window per stream. Memory that the streams leave free becomes the prompt cache, which holds earlier
-prompts so that chat follow-ups skip prefill.
-
-`native/engine.env` sets the default, 2 streams with a 274,432-token window (67 × 4,096; the model allows
-1,048,576). Override it for one boot:
-
-```bash
-PARALLEL=8 CONTEXT=65536 native/cluster.sh -p A start
-```
-
-Measured on pair A (2026-10-20, engine `bf010924`, fp8 KV, 6 GiB reserve per rank). Values come from rank 0's
-startup line. The short TTFT is a ~220-token chat prompt on an idle server. Boot time does not depend on the stream
-count: it is the checkpoint read.
+Measured on pair A (2026-10-20, fp8 KV, 6 GiB reserve per rank). Values come from rank 0's startup line. The short
+TTFT is a ~220-token chat prompt on an idle server. Boot time does not depend on the stream count.
 
 | Streams | Context per stream | GiB per stream | Model + buffers per rank | Prompt cache | Short TTFT |
 |---|---|---|---|---|---|
-| 2 (default) | 274,432 | 2.02 | 100.19 GiB | 2.6 GiB | 473 ms |
+| 2 (default) | 274,432 | 2.02 | 100.19 GiB | 2.3–2.6 GiB | 473 ms |
 | 4 | 131,072 | 1.09 | 99.19 GiB | 2.4 GiB | 474 ms |
 | 8 | 65,536 | 0.66 | 98.73 GiB | 1.4 GiB | 476 ms |
 
-With 2 streams, a third request waits until a stream frees up. Requests are not refused. Measured effects of the
+With 2 streams, a third request waits until a stream frees up; requests are not refused. Measured effects of the
 stream count:
 
-- At 4 streams, a short chat sent while 4 others decoded and a 32K prompt filled waited 42.9 s.
+- At 4 streams, a short chat sent while 4 others decoded and a 32K prompt filled waited 42.9 s (no free stream).
 - At 8 streams, the same chat got its first token in about 0.7 s.
-- At 8 streams, 8 chats started together decode at 99 tok/s in total, 2.2× one stream.
+- At 8 streams, 8 chats started together decode at 100 tok/s in total, 2.2× one stream.
 
-For chat-heavy or multi-user serving, use 4 or 8 streams. Use 2 when single requests need windows past 128K.
-`autoresearch.sh` always benchmarks 8 streams at 65,536, whatever `engine.env` says.
+For chat-heavy or multi-user serving, use 4 or 8 streams. Use 2 when single requests need windows past 128K
+(needle recall is exact at 242K tokens).
 
 ## How it is put together
 
 | Piece | What |
 |---|---|
 | Model | GLM-5.3-Flash architecture: 45 layers (3 dense + 42 MoE, 288 experts, top-8), hybrid KDA linear attention and DSA sparse attention, 1M native context |
-| Weights | RED-SNOW EXL3 SAGE MixedK, 4.91 bpw, mul1 codebook, 36 shards; the `lm_head` comes from the BF16 release, pinned by revision and sha256 |
-| Engine | TensorFold 0.6.5 + the GLM-5.3 TP=4 CUDA work of `vcruz305/TensorFold` `glm53-tp4-spark` + this project's branch `redsnow-v1` ([justincasey/TensorFold](https://github.com/justincasey/TensorFold), tag `redsnow-v1.0.2`) |
-| Split | TP=2, one rank a Spark. Rank 0 runs the API and the rendezvous; NCCL over RoCE on the QSFP link |
-| Decode | DFlash2 chain drafting with the engine's adaptive policy; drafted rounds are verified by the target in captured CUDA graphs (up to 8 rows), so drafting changes speed, not the reply: a drafted reply equals the `"draft": false` one token for token; a streamed reply arrives one decode round at a time |
-| KV cache | DSA latent cache in fp8 (e4m3, per-token scale); the indexer keys dominate the cache cost (~9.7 KiB a token) |
-| Memory | ~102.6 GiB a rank at 128K context, of ~112 GiB usable |
+| Weights | RED-SNOW EXL3 SAGE MixedK, 4.91 bpw, mul1 codebook, per-expert widths, 36 shards, read as downloaded (the pack's own EXL3 `lm_head`) |
+| Engine | TensorFold v1.1.0's native Zig + CUDA server plus this project's 55 commits: [`justincasey/TensorFold` tag `redsnow-native-v1.0.0`](https://github.com/justincasey/TensorFold/tree/redsnow-native-v1.0.0) (`76548777`; development continues on branch `redsnow-native`). One binary, built on rank 0 and copied to rank 1 (the ranks compare digests) |
+| Split | TP=2, one rank a Spark. Rank 0 runs the API; NCCL over RoCE on every rail of the QSFP link, plus RDMA all-gathers in decode |
+| Prefill | 4,096-row prompt chunks: fused mul1 routed experts (each expert's weights read once a chunk), a dense EXL3 GEMM, chunked (WY) KDA, latent attention on tensor cores |
+| Decode | DFlash2 chain drafting (confidence cut 0.6); verify windows replay CUDA graphs, with the shared expert and KDA's bf16 projections on a side stream. A drafted reply equals the `"draft": false` one token for token |
+| Concurrency | several streams' windows share one forward (KDA and attention for all segments in one pass); long prompts fill in layer groups with decode rounds between them; fresh short prompts fill together in one pass; every concurrent reply equals its solo one |
+| KV cache | DSA latent cache in fp8 (e4m3, fp32 row scale) |
+| Boot | each layer's checkpoint bytes read by 8 threads while the previous layer loads; ~90 s from `start` to serving |
+
+`native/cluster.sh` is the launcher `redsnow.sh` calls. For engine development it also syncs a local checkout
+(`TF_SRC=<checkout> native/cluster.sh sync && native/cluster.sh build`), and `autoresearch.sh` is the benchmark
+harness used to tune it (8 streams × 65,536, primary metric `trace_mean_s`).
+
+## Python engine (v1.0.2)
+
+`ENGINE=python` in `.env` serves with v1.0.2's engine instead, exactly as v1.0.2 did: TensorFold 0.6.5 + the GLM-5.3
+TP=4 CUDA work of `vcruz305/TensorFold` `glm53-tp4-spark` + this project's branch `redsnow-v1` (tag `redsnow-v1.0.2`).
+Its `install` builds a full PyTorch venv and the CUDA extensions (~3 min), its `download` adds one BF16 shard
+holding `lm_head` (sha256-checked), and `view` builds a serve view with that head swapped in. It serves one
+request at a time (others queue), with a 131,072-token window, ~102.6 GiB a rank. Its benchmarks are
+`./redsnow.sh bench [smoke|decode|pin|long|sixcat|all]`, and its tuned settings (`TF_GLM_EXL3_LOADS=nc2`,
+`TF_GLM_HC_SPLIT=1`, `TF_GLM_PREFILL_OVERLAP=2`, `TF_GLM_KDA_CHUNKED=1`, `TF_GLM_MTP=0`) apply only to it.
 
 The `redsnow-v1` branch adds to TensorFold 0.6.5 + `glm53-tp4-spark`:
 
@@ -248,12 +233,48 @@ The `redsnow-v1` branch adds to TensorFold 0.6.5 + `glm53-tp4-spark`:
 - the fp8 (and q4) latent KV cache
 - MiaAI-Lab's decode-round windows, KDA chunked prefill, HC row split, prefill overlap, pool-score kernel, DFlash2
   stop rules, and the 16-byte decode loads and expert launch order (ports; see [Credits](#credits))
-- off by default and not part of this recipe's path: an fp8 MoE prefill route, tree drafting, a decode profiler
-  trace
 
 ## Benchmarks
 
-### v1.0.2 baseline (2026-10-10, this repo's defaults)
+### Native engine (2026-10-20, `redsnow-native-v1.0.0`)
+
+`./redsnow.sh bench` on a fresh boot, run on rank 0, at 8 streams × 65,536 (`PARALLEL=8 CONTEXT=65536`), greedy,
+fp8 KV, DFlash2 on. `bench run` is `bench/native/run.py`; `bench conc` is `bench/native/conc.py`. Both fail on any
+drafted reply that differs from its `"draft": false` reply, or any concurrent reply that differs from its solo one.
+
+| Prompt (512 tokens, thinking on) | Drafted tok/s | Tokens per round | Not drafted tok/s |
+|---|---|---|---|
+| code | 45.79 | 2.98 | 27.83 |
+| prose | 35.12 | 1.90 | 27.90 |
+| math | 59.97 | 4.16 | 27.74 |
+| chat_explain | 39.27 | 2.27 | 27.91 |
+| chat_multiturn | 45.59 | 2.67 | 27.89 |
+| long_doc | 44.00 | 3.07 | 27.01 |
+| **mean** | **44.96** | **2.84** | **27.71** |
+
+| Prefill (cold, 8 tokens out) | Prompt tokens | TTFT | Prefill |
+|---|---|---|---|
+| Moby-Dick slice | 8,757 | 5.87 s | 1,498 tok/s |
+| Moby-Dick slice | 32,307 | 19.61 s | 1,651 tok/s |
+| Chat prompt | ~220 | 0.48 s | |
+
+Needle recall: exact at ~6K tokens (every `bench run`) and at 242K tokens (2 × 274,432, codes at 10% and 50% depth).
+
+| Concurrency (chats of 256 tokens started together) | Total tok/s | vs 1 stream | Worst TTFT |
+|---|---|---|---|
+| 1 | 45.5 | 1.00× | 0.46 s |
+| 2 | 48.1 | 1.06× | 0.59 s |
+| 4 | 65.6 | 1.44× | 0.87 s |
+| 8 | 100.5 | 2.21× | 1.58 s |
+
+| Mixed load | Result |
+|---|---|
+| 4 chats decoding while a cold 32K prompt fills: longest gap between their tokens | 0.40 s |
+| A short chat sent during that fill: time to first token | 0.70 s |
+| The 32K prompt's own TTFT under that load (it shares the GPU with the decoders) | 45.6 s |
+| Open-loop trace (5 chats + cold 32K and 8K prompts, 7 requests in 6 s): mean submit-to-last-token | 29.4 s |
+
+### Python engine v1.0.2 baseline (2026-10-10)
 
 `./redsnow.sh bench all` on a fresh boot, run on rank 0. The suite is adapted from vcruz305's
 [GLM-5.3 recipe](https://github.com/vcruz305/GLM-5.3-EXL3-DGX-Spark-recipe) (`bench/`, MIT) and
@@ -305,7 +326,7 @@ were not the `"draft": false` ones: they parted at token 0 to 94. They were othe
 better. v1.0.2 makes drafted and serial replies agree. A decode round costs the same (code 76 ms vs 78 ms,
 chat_multiturn 69 ms vs 72 ms), and on the six prompts' serial texts DFlash2 accepts fewer tokens per round.
 
-### v1.0.0 run (2026-10-10, this repo's defaults)
+### Python engine v1.0.0 run (2026-10-10)
 
 Measured with v1.0.0's `bench/bench.py` (replaced by the suite above in v1.0.1). One warm-up request first, then
 every request starts with a fresh nonce, except the canonical prose arm, which uses the fixed prompt that every
@@ -328,7 +349,7 @@ request at a time, so concurrent requests queue. Each one is answered correctly,
 Needle recall (a code buried in filler, greedy): exact at 90,210 tokens (prefill 215 s, 419 tok/s) and at 36,210
 tokens.
 
-### Engine settings, A/B
+### Python engine: settings A/B
 
 Each arm is a fresh boot. The protocol is the canonical prose prompt (3 runs), plus ~16K-token prompts for TTFT.
 
@@ -345,7 +366,7 @@ Each arm is a fresh boot. The protocol is the canonical prose prompt (3 runs), p
 Every arm passed the layer parity check (EXL3 groups, both ranks, against a float64 reference) before it was
 benchmarked.
 
-### KV cache precision and capacity
+### Python engine: KV cache precision and capacity
 
 | KV | Prose tok/s | Memory at 128K | Notes |
 |---|---|---|---|
@@ -366,7 +387,7 @@ Measured startup estimates, out of ~113.5 GiB:
 Each extra token costs ~9.7 KiB, mostly indexer keys and scratch. The latent itself is 2.75 KiB of that, so fp8
 and q4 differ little until the window gets very large.
 
-### Where decode time goes
+### Python engine: where decode time goes
 
 One drafted round takes ~67 ms of wall time: ~4.8 ms drafting, and the rest is the target forward on both ranks.
 The GPU kernels inside it sum to 59.1 ms (torch profiler trace, fp8 KV, before nc2):
@@ -384,7 +405,7 @@ A read probe on the loaded server reached ~200–230 GB/s. The expert launches s
 decode is bound by memory bandwidth at 4.91 bpw, not by kernel launches. Each extra verify row costs ~6 ms.
 Faster decode needs higher draft acceptance or fewer weight bytes; fusing kernels only removes 1–3 ms of gaps.
 
-### Drafting
+### Python engine: drafting policies
 
 | Policy | Prose tok/s | Tokens per round |
 |---|---|---|
@@ -400,7 +421,7 @@ compare rows, not these numbers against the v1 run. DFlash2's side branches are 
 main chain, so tree drafting loses to the wider verify windows it needs. NCCL channel counts (2/4/8), LL128 and
 NVLS measured flat.
 
-### Prefill
+### Python engine: prefill
 
 Prefill is ~60% MoE, ~23% KDA and ~14% DSA (profiled 2.7K-token chunk). The three prefill settings cut 16K TTFT
 by 6% (A/B above). The engine's optional fp8 MoE prefill route (`--prefill-fp8`, not in v1) was a further ~5%
@@ -414,14 +435,17 @@ prose, 35–44 on code and structured output, and up to 65 on highly predictable
 
 ## Known limits
 
-- One request decodes at a time. Concurrent requests queue (each is answered correctly).
-- Prose decode depends on the text: 30–37 tok/s across the prompts above.
-- A stop string ends the streamed text at once, but the request finishes only when decoding reaches an end token or
-  `max_tokens`: both ranks decode to the end.
-- The `test_exl3_experts` bit-identity checks fail identically on the pre-graft tree (last-ulp differences in the
+- Native: the number of streams is fixed at boot. With the default 2, a third request waits for a free stream
+  (it is answered correctly, just later); use `PARALLEL=8 CONTEXT=65536` for many users.
+- Native: a long prompt filling beside decoding streams shares the GPU with them, so its own first token comes later
+  (a cold 32K prompt: 19.6 s alone, ~46 s beside 4 decoding chats), while theirs keep coming.
+- Native: kept prompt states (the prompt cache) resume only on 4,096-token boundaries.
+- Prose decode depends on the text: 35 tok/s native (30–37 python) across the prompts above.
+- Python engine: one request decodes at a time; concurrent requests queue. A stop string ends the streamed text at
+  once, but the request finishes only when decoding reaches an end token or `max_tokens`. Each start logs
+  `CUDA extension … waits on the build lock …` lines for kernels already built; they are harmless. The
+  `test_exl3_experts` bit-identity checks fail identically on the pre-graft tree (last-ulp differences in the
   grouped kernel, present before the nc2 work).
-- Each start logs `CUDA extension … waits on the build lock …` lines for kernels already built. When the server
-  comes up, they are harmless.
 
 ## Credits
 
