@@ -4,47 +4,53 @@ Serve [RED-SNOW-5.3-FLASH](https://huggingface.co/Blackfrost-AI/RED-SNOW-5.3-FLA
 cyber-operations finetune of GLM-5.3-Flash, from two NVIDIA DGX Sparks joined by one QSFP cable, behind an
 OpenAI-compatible API. The model is vcruz305's
 [EXL3 SAGE 4.91 bpw pack](https://huggingface.co/vcruz305/RED-SNOW-5.3-FLASH-EXL3-SAGE-4.91bpw) (199.5 GB), split
-across both GPUs by tensor parallelism (TP=2) in a [TensorFold](https://github.com/ashhart/TensorFold) fork, with
-Inco AI's [DFlash2](https://huggingface.co/incoai/GLM-5.3-Flash-DFlash2) drafter for speculative decoding.
+across both GPUs by tensor parallelism (TP=2), with Inco AI's
+[DFlash2](https://huggingface.co/incoai/GLM-5.3-Flash-DFlash2) drafter for speculative decoding.
+
+The engine is [TensorFold](https://github.com/ashhart/TensorFold) 1.1's native Zig + CUDA server, from this project's
+fork: [`justincasey/TensorFold` tag `redsnow-native-v1.0.0`](https://github.com/justincasey/TensorFold/tree/redsnow-native-v1.0.0).
+v1.0.2's Python engine is still one setting away (`ENGINE=python`, [below](#python-engine-v102)).
 
 One script sets it up and runs it:
 
 ```bash
 cp .env.example .env        # set RANK0, RANK1, and the drafter license choice
-./redsnow.sh setup          # check both nodes, install, download, build the serve view
-./redsnow.sh start          # ~1 minute later: http://<rank0>:8080/v1
+./redsnow.sh setup          # check both nodes, install and build the engine, download the model
+./redsnow.sh start          # ~90 s later: http://<rank0>:8080/v1
 ```
 
 ## Headline numbers
 
-Measured 2026-10-10 on 2× DGX Spark (GB10, 128 GB) with this repo's defaults (engine `redsnow-v1.0.2`), by
-`./redsnow.sh bench all`: vcruz305's benchmark suite, described under [Benchmarks](#benchmarks). Greedy decoding,
-one request at a time. Decode tok/s counts the server's decode time only.
+Measured 2026-10-20 on 2× DGX Spark (GB10, 128 GB), engine `redsnow-native-v1.0.0`, fp8 KV, greedy, DFlash2 on, by
+`bench/native/run.py` and `bench/native/conc.py` (`./redsnow.sh bench`). Every run checks that drafted replies equal
+`"draft": false` replies and that concurrent replies equal solo ones, token for token. The concurrency rows use
+8 streams × 65,536 tokens (`PARALLEL=8 CONTEXT=65536`); the others hold for any stream setting.
 
-| Measurement | Result |
-|---|---|
-| Decode with DFlash2, mean of 6 real prompts (512 tokens each, thinking on) | **39.6 tok/s** (prose 31.9 … math 55.9) |
-| Decode without drafting, same prompts and same replies | 24.4 tok/s |
-| Time to first token, ~220-token prompt | 0.78 s (0.08–0.21 s when the prompt is repeated) |
-| Time to first token, 127,712-token prompt (Moby-Dick) | 336 s (381 tok/s prefill) |
-| Decode after that prompt, drafted / not drafted | 34.9 / 22.7 tok/s |
-| SixCat decode p50 (synthetic prompt that drafts unusually well: a ceiling, not typical speed) | 67.4 tok/s |
-| SixCat prefill p50, ~2,640-token prompt | 379 tok/s |
+| Measurement | Native (this release) | Python v1.0.2 |
+|---|---|---|
+| Decode with DFlash2, mean of 6 prompts (512 tokens each, thinking on) | **45.0 tok/s** (prose 35.1 … math 60.0) | 39.6 tok/s |
+| Decode without drafting, same prompts and same replies | **27.7 tok/s** | 24.4 tok/s |
+| Prefill, cold 8,757 / 32,307-token prompt | **1,498 / 1,651 tok/s** (TTFT 5.9 / 19.6 s) | ~380 tok/s |
+| Time to first token, ~220-token chat prompt | **0.48 s** | 0.78 s |
+| 8 chats at once, total decode | **100.5 tok/s** (2.2× one stream; worst TTFT 1.6 s) | 35.9 tok/s (requests queue) |
+| Short chat sent while 4 chats decode and a cold 32K prompt fills | **0.70 s** to first token | waits for the whole fill |
+| Ready after `start` (cold page cache) | **~90 s** | ~60 s |
 
-128K-token context (fp8 KV cache). Needle recall exact at 36K and 90K tokens. The server is ready about 60 s
-after `start`. The speed depends on what the model writes: DFlash2's drafts are accepted far more often for
-code and structured text than for free prose. More data under [Benchmarks](#benchmarks).
+Needle recall (a code at 10% and 50% depth, greedy) is exact at 242K tokens with the default 2 × 274,432 window.
+The speed depends on what the model writes: DFlash2's drafts are accepted far more often for code and
+structured text than for free prose. Per-prompt numbers and the concurrency sweep are under [Benchmarks](#benchmarks).
 
 ## What you need
 
 - **Two DGX Sparks** (GB10) on DGX OS (Ubuntu 24.04 with CUDA 13.0 at `/usr/local/cuda`), with nothing else on
-  their GPUs: each rank holds ~103 GiB.
+  their GPUs: each rank holds ~100 GiB.
 - **One QSFP cable** between them, addressed on both ends ([The link](#the-link)).
 - **~200 GiB free disk on each node.** Each node keeps its own copy of the model.
-- `python3.12-venv` and `git` on both nodes (`sudo apt install python3.12-venv git`).
+- `python3.12-venv`, `git` and `curl` on both nodes (`sudo apt install python3.12-venv git curl`). A small venv
+  holds the Hugging Face downloader and NCCL; the engine itself is one native binary built on rank 0.
 - **A control machine** (either Spark works, or a Linux or macOS box) with bash 4 or newer and python3, and
   key-based ssh to both Sparks. On macOS: `brew install bash`.
-- Internet on both nodes for the first setup (PyPI, GitHub, Hugging Face).
+- Internet on both nodes for the first setup (GitHub, ziglang.org, PyPI, Hugging Face).
 
 ## Install
 
@@ -58,7 +64,9 @@ Edit `.env`:
 
 - `RANK0` / `RANK1`: ssh targets of the two Sparks (`user@host`). Rank 0 serves the API.
 - `ACCEPT_DFLASH2_LICENSE=yes` if the DFlash2 drafter's CC BY-NC-ND 4.0 terms (non-commercial) work for you.
-  Otherwise set `DRAFTS=off`: the server decodes without drafting, at about 25 tok/s on prose.
+  Otherwise set `DRAFTS=off`: the server decodes without drafting, at about 28 tok/s.
+- Optional: `PARALLEL` and `CONTEXT` ([Streams vs context](#streams-vs-context)). The default is 2 streams of
+  274,432 tokens; chat-heavy or multi-user serving wants `PARALLEL=8 CONTEXT=65536`.
 
 Then:
 
@@ -71,20 +79,19 @@ Then:
 | Step | What it does | Time |
 |---|---|---|
 | `preflight` | GPU, nvcc, python, disk and memory on both nodes; finds the link and pings across it | seconds |
-| `install` | clones the pinned TensorFold fork into `~/redsnow/tensorfold`, builds a venv with the exact package set in `config/constraints.txt`, compiles the CUDA kernels | ~3 min |
-| `download` | the pack (pinned revision), one BF16 shard holding `lm_head` (sha256-checked), the drafter; both nodes at once, resumable | depends on your link; ~200 GiB a node |
-| `view` | the serve view: the pack's files linked, its 8-bit `lm_head` swapped for the BF16 one | seconds |
+| `install` | fetches the pinned engine tag into `~/redsnow/native/src` (refuses any other commit), Zig 0.17.0, a small venv with the Hugging Face downloader and NCCL 2.30.7 (`config/constraints.txt`); builds the engine once on rank 0 and copies the binary to rank 1 | ~5 min |
+| `download` | the pack (pinned revision) and the drafter; both nodes at once, resumable | depends on your link; ~200 GiB a node |
 
 Everything goes under `~/redsnow` on each node (`BASE_DIR` and `MODELS_DIR` move it).
 
 ## Run
 
 ```bash
-./redsnow.sh start      # both ranks; waits until the API answers
+./redsnow.sh start      # both ranks; waits until the API answers (~90 s)
 ./redsnow.sh smoke      # one request: 17*23 must come back as 391
-./redsnow.sh status     # processes and /v1/models
-./redsnow.sh logs 0     # tail of rank 0's log (logs 1 for rank 1)
-./redsnow.sh bench      # the benchmarks behind the numbers above (~30 min; bench smoke: checks only)
+./redsnow.sh status     # both ranks and /health
+./redsnow.sh logs       # tail of both ranks' logs
+./redsnow.sh bench      # the benchmarks behind the numbers above (bench run ~10 min, bench conc ~6 min)
 ./redsnow.sh stop
 ```
 

@@ -1,16 +1,19 @@
 #!/usr/bin/env bash
 # RED-SNOW-5.3-Flash (EXL3 SAGE 4.91bpw) on two DGX Sparks joined by one QSFP cable, TensorFold TP=2.
+# ENGINE=native (default): the Zig TensorFold 1.1 engine (justincasey/TensorFold tag redsnow-native-v1.0.0).
+# ENGINE=python: v1.0.2's Python engine (tag redsnow-v1.0.2), as before.
 #
 # Run from any machine that reaches both Sparks over key-based ssh. Rank 0 serves the OpenAI-compatible API.
 #
-#   ./redsnow.sh setup        preflight + install + download + view (first time; idempotent)
+#   ./redsnow.sh setup        preflight + install + download (+ view for python) (first time; idempotent)
 #   ./redsnow.sh preflight    check both nodes: GPU, CUDA, python, disk, the link between them
-#   ./redsnow.sh install      engine (pinned TensorFold fork) + venv + CUDA kernels, on both nodes
-#   ./redsnow.sh download     model pack, BF16 head shard and (DRAFTS=on) the DFlash2 drafter, on both nodes
-#   ./redsnow.sh view         build the serve view (pack + BF16 lm_head) on both nodes
+#   ./redsnow.sh install      native: engine at the pinned tag, Zig 0.17, NCCL, one build; python: engine + venv + kernels
+#   ./redsnow.sh download     model pack and (DRAFTS=on) the DFlash2 drafter (+ the BF16 head shard for python)
+#   ./redsnow.sh view         python only: build the serve view (pack + BF16 lm_head) on both nodes
 #   ./redsnow.sh start        launch both ranks and wait until the API answers
 #   ./redsnow.sh stop | restart | status | smoke | logs [0|1]
-#   ./redsnow.sh bench [smoke|decode|pin|long|sixcat|all]   on rank 0; results under bench/runs/ (default all)
+#   ./redsnow.sh bench [run|conc|all]      native, on rank 0; results under bench/runs/ (default all)
+#   ./redsnow.sh bench [smoke|decode|pin|long|sixcat|all]   python
 #
 # Configuration: environment > .env > defaults below. .env.example documents every key.
 set -euo pipefail
@@ -43,13 +46,24 @@ log() { printf '%s %s\n' "$(date +%H:%M:%S)" "$*" >&2; }
 die() { log "error: $*"; exit 1; }
 
 # ── defaults ─────────────────────────────────────────────────────────────────
+ENGINE="${ENGINE:-native}"                               # native: Zig TensorFold 1.1 (default); python: v1.0.2's engine
+[[ $ENGINE == native || $ENGINE == python ]] || die "ENGINE must be native or python (got: $ENGINE)"
+# what the caller or .env set (native passes only these on; native/engine.env holds the native defaults)
+SET_CONTEXT="${CONTEXT:-}" SET_PARALLEL="${PARALLEL:-}" SET_KV_DTYPE="${KV_DTYPE:-}"
+SET_RESERVE="${MEMORY_RESERVE_GIB:-}" SET_NCHANNELS="${NCCL_MAX_NCHANNELS:-}"
 RANK0="${RANK0:-}"; RANK1="${RANK1:-}"                   # ssh targets, e.g. spark@spark-a.local
 BASE_DIR="${BASE_DIR:-}"                                 # empty: $HOME/redsnow of rank 0's ssh user
 MODELS_DIR="${MODELS_DIR:-}"                             # empty: $BASE_DIR/models
 
 TF_REPO="${TF_REPO:-https://github.com/justincasey/TensorFold.git}"
-TF_REF="${TF_REF:-redsnow-v1.0.2}"
-TF_COMMIT="${TF_COMMIT:-f5d727aec09e3d25aac6435458bd3b467b4cf952}"   # install refuses any other commit
+if [[ $ENGINE == native ]]; then
+  TF_REF="${TF_REF:-redsnow-native-v1.0.0}"
+  TF_COMMIT="${TF_COMMIT:-76548777e61cb1402b81058564c34cb8d9af1a74}"   # install refuses any other commit
+else
+  TF_REF="${TF_REF:-redsnow-v1.0.2}"
+  TF_COMMIT="${TF_COMMIT:-f5d727aec09e3d25aac6435458bd3b467b4cf952}"
+fi
+ZIG_URL="${ZIG_URL:-https://ziglang.org/download/0.17.0/zig-aarch64-linux-0.17.0.tar.xz}"
 
 PACK_REPO="${PACK_REPO:-vcruz305/RED-SNOW-5.3-FLASH-EXL3-SAGE-4.91bpw}"
 PACK_REV="${PACK_REV:-f6b8963784254095a54944f2963b2925fcf4b199}"
@@ -74,13 +88,16 @@ NCCL_MAX_NCHANNELS="${NCCL_MAX_NCHANNELS:-4}"
 MASTER_PORT="${MASTER_PORT:-29551}"
 WAIT_TIMEOUT="${WAIT_TIMEOUT:-900}"
 
-# The tuned serving path (each measured; README "Benchmarks"). Override in .env to experiment.
-TF_GLM_MTP="${TF_GLM_MTP:-0}"                            # DFlash2 drafts every request; the MTP head stays unloaded
-TF_GLM_EXL3_LOADS="${TF_GLM_EXL3_LOADS:-nc2}"            # 16-byte no-allocate trellis loads, 2 steps in flight
-TF_GLM_HC_SPLIT="${TF_GLM_HC_SPLIT:-1}"                  # prefill: row-split hyper-connection glue across ranks
-TF_GLM_PREFILL_OVERLAP="${TF_GLM_PREFILL_OVERLAP:-2}"    # prefill: next block's front under the glue exchanges
-TF_GLM_KDA_CHUNKED="${TF_GLM_KDA_CHUNKED:-1}"            # prefill: KDA prompt chunks in chunked (WY) form
-export TF_GLM_MTP TF_GLM_EXL3_LOADS TF_GLM_HC_SPLIT TF_GLM_PREFILL_OVERLAP TF_GLM_KDA_CHUNKED
+# The tuned serving path of the python engine (each measured; README "Benchmarks"). Override in .env to experiment.
+# The native engine's settings live in native/engine.env.
+if [[ $ENGINE == python ]]; then
+  TF_GLM_MTP="${TF_GLM_MTP:-0}"                          # DFlash2 drafts every request; the MTP head stays unloaded
+  TF_GLM_EXL3_LOADS="${TF_GLM_EXL3_LOADS:-nc2}"          # 16-byte no-allocate trellis loads, 2 steps in flight
+  TF_GLM_HC_SPLIT="${TF_GLM_HC_SPLIT:-1}"                # prefill: row-split hyper-connection glue across ranks
+  TF_GLM_PREFILL_OVERLAP="${TF_GLM_PREFILL_OVERLAP:-2}"  # prefill: next block's front under the glue exchanges
+  TF_GLM_KDA_CHUNKED="${TF_GLM_KDA_CHUNKED:-1}"          # prefill: KDA prompt chunks in chunked (WY) form
+  export TF_GLM_MTP TF_GLM_EXL3_LOADS TF_GLM_HC_SPLIT TF_GLM_PREFILL_OVERLAP TF_GLM_KDA_CHUNKED
+fi
 
 SSH_OPTS=(-o BatchMode=yes -o StrictHostKeyChecking=accept-new -o ConnectTimeout=10)
 need_hosts() { [[ -n "$RANK0" && -n "$RANK1" ]] || die "set RANK0 and RANK1 (ssh targets) in .env — see .env.example"; }
@@ -111,14 +128,15 @@ resolve_paths() {
     BASE_DIR="$(remote 0 'printf %s "$HOME"')/redsnow"
   fi
   MODELS_DIR="${MODELS_DIR:-$BASE_DIR/models}"
-  SRC_DIR="$BASE_DIR/tensorfold"; VENV="$BASE_DIR/venv"; LOG_DIR="$BASE_DIR/logs"
+  SRC_DIR="$BASE_DIR/tensorfold"; VENV="$BASE_DIR/venv"; LOG_DIR="$BASE_DIR/logs"; NATIVE_DIR="$BASE_DIR/native"
   EXT_DIR="$BASE_DIR/torch_extensions"
   PACK_DIR="$MODELS_DIR/${PACK_REPO##*/}"; HEAD_DIR="$MODELS_DIR/${HEAD_REPO##*/}"
   DRAFTER_DIR="$MODELS_DIR/${DRAFTER_REPO##*/}"; SERVE_DIR="$MODELS_DIR/redsnow-serve"
 }
 paths_kv() {
   echo BASE_DIR="$BASE_DIR" MODELS_DIR="$MODELS_DIR" SRC_DIR="$SRC_DIR" VENV="$VENV" LOG_DIR="$LOG_DIR" \
-       EXT_DIR="$EXT_DIR" PACK_DIR="$PACK_DIR" HEAD_DIR="$HEAD_DIR" DRAFTER_DIR="$DRAFTER_DIR" SERVE_DIR="$SERVE_DIR"
+       EXT_DIR="$EXT_DIR" PACK_DIR="$PACK_DIR" HEAD_DIR="$HEAD_DIR" DRAFTER_DIR="$DRAFTER_DIR" SERVE_DIR="$SERVE_DIR" \
+       NATIVE_DIR="$NATIVE_DIR"
 }
 
 # ── the link between the Sparks ──────────────────────────────────────────────
@@ -253,17 +271,19 @@ hf="$VENV/bin/hf"; [[ -x "$hf" ]] || { echo "FAIL $hf missing: run install first
 [[ -z "$HF_TOKEN" ]] || export HF_TOKEN
 "$hf" download "$PACK_REPO" --revision "$PACK_REV" --local-dir "$PACK_DIR" >/dev/null
 echo "pack: $(du -sh "$PACK_DIR" | cut -f1)"
-"$hf" download "$HEAD_REPO" "$HEAD_FILE" --revision "$HEAD_REV" --local-dir "$HEAD_DIR" >/dev/null
-sum=$(sha256sum "$HEAD_DIR/$HEAD_FILE" | cut -d" " -f1)
-[[ "$sum" == "$HEAD_SHA256" ]] || { echo "FAIL head shard sha256 $sum != $HEAD_SHA256"; exit 1; }
-echo "head shard: sha256 ok"
+if [[ $ENGINE == python ]]; then   # python: the serve view swaps in the BF16 head (native reads the pack head)
+  "$hf" download "$HEAD_REPO" "$HEAD_FILE" --revision "$HEAD_REV" --local-dir "$HEAD_DIR" >/dev/null
+  sum=$(sha256sum "$HEAD_DIR/$HEAD_FILE" | cut -d" " -f1)
+  [[ "$sum" == "$HEAD_SHA256" ]] || { echo "FAIL head shard sha256 $sum != $HEAD_SHA256"; exit 1; }
+  echo "head shard: sha256 ok"
+fi
 if [[ $DRAFTS == on ]]; then
   "$hf" download "$DRAFTER_REPO" --revision "$DRAFTER_REV" --local-dir "$DRAFTER_DIR" >/dev/null
   echo "drafter: $(du -sh "$DRAFTER_DIR" | cut -f1)"
 fi
 ' $(paths_kv) PACK_REPO="$PACK_REPO" PACK_REV="$PACK_REV" HEAD_REPO="$HEAD_REPO" HEAD_REV="$HEAD_REV" \
     HEAD_FILE="$HEAD_FILE" HEAD_SHA256="$HEAD_SHA256" DRAFTER_REPO="$DRAFTER_REPO" DRAFTER_REV="$DRAFTER_REV" \
-    DRAFTS="$DRAFTS" HF_TOKEN="${HF_TOKEN:-}" < /dev/null || die "download failed"
+    DRAFTS="$DRAFTS" HF_TOKEN="${HF_TOKEN:-}" ENGINE="$ENGINE" < /dev/null || die "download failed"
 }
 
 cmd_view() {
@@ -446,20 +466,101 @@ cmd_bench() {
   return "$rc"
 }
 
+# ── the native engine (default; ENGINE=python serves with v1.0.2's engine) ──
+cmd_install_native() {
+  resolve_paths
+  log "installing native TensorFold $TF_REF into $NATIVE_DIR on both nodes"
+  both '
+mkdir -p "$NATIVE_DIR/lib" "$NATIVE_DIR/zig" "$BASE_DIR"
+src="$NATIVE_DIR/src"
+[[ -d "$src/.git" ]] || git init --quiet "$src"
+git -C "$src" fetch --quiet --depth 1 "$TF_REPO" tag "$TF_REF"
+git -C "$src" -c advice.detachedHead=false checkout --quiet --force "$TF_REF"
+head=$(git -C "$src" rev-parse "$TF_REF^{commit}")
+[[ -z "$TF_COMMIT" || "$head" == "$TF_COMMIT" ]] || { echo "FAIL $TF_REF resolved to $head, expected $TF_COMMIT"; exit 1; }
+echo "engine at $head"
+zig="$NATIVE_DIR/zig/zig-aarch64-linux-0.17.0/zig"
+[[ -x "$zig" ]] || curl -fsSL "$ZIG_URL" | tar -C "$NATIVE_DIR/zig" -xJ
+echo "zig $("$zig" version)"
+[[ -x "$VENV/bin/python" ]] || python3.12 -m venv "$VENV"
+"$VENV/bin/python" -m pip install --quiet --upgrade pip
+"$VENV/bin/python" -m pip install --quiet -c "$BASE_DIR/constraints.txt" huggingface_hub nvidia-nccl-cu13
+nccl=$("$VENV/bin/python" -c "import nvidia.nccl, os; print(os.path.join(list(nvidia.nccl.__path__)[0], \"lib/libnccl.so.2\"))")
+ln -sf "$nccl" "$NATIVE_DIR/lib/libnccl.so.2"
+echo "nccl: $nccl"
+' $(paths_kv) TF_REPO="$TF_REPO" TF_REF="$TF_REF" TF_COMMIT="$TF_COMMIT" ZIG_URL="$ZIG_URL" < /dev/null \
+    || die "install failed"
+  log "building the engine on rank 0 (a few minutes), then copying it to rank 1"
+  native_cluster build || die "build failed (log: $NATIVE_DIR/build.log on rank 0)"
+}
+
+# native/cluster.sh with this script's settings; only the context, streams, KV and reserve you set reach it
+# (native/engine.env holds the native defaults: 2 streams x 274,432 tokens, fp8 KV, a 6 GiB reserve)
+native_cluster() {
+  local kv=(RANK0="$RANK0" RANK1="$RANK1" BASE_DIR="$BASE_DIR" MODELS_DIR="$MODELS_DIR" REMOTE="$NATIVE_DIR"
+            MODEL="$PACK_DIR" DRAFTER="$DRAFTER_DIR" HOST="$HOST" PORT="$PORT" DRAFTS="$DRAFTS" API_KEY="$API_KEY"
+            SERVED_NAME="$SERVED_NAME" READY_S="$WAIT_TIMEOUT")
+  [[ -n $SET_CONTEXT ]] && kv+=(CONTEXT="$SET_CONTEXT")
+  [[ -n $SET_PARALLEL ]] && kv+=(PARALLEL="$SET_PARALLEL")
+  [[ -n $SET_KV_DTYPE ]] && kv+=(EXTRA_ARGS="--kv-cache $SET_KV_DTYPE")
+  [[ -n $SET_RESERVE ]] && kv+=(TENSORFOLD_MEMORY_RESERVE_GIB="$SET_RESERVE")
+  [[ -n $SET_NCHANNELS ]] && kv+=(NCCL_MAX_NCHANNELS="$SET_NCHANNELS")
+  env -u CONTEXT -u PARALLEL -u EXTRA_ARGS -u TENSORFOLD_MEMORY_RESERVE_GIB -u NCCL_MAX_NCHANNELS -u ZIG_DIR \
+    -u TF_SRC "${kv[@]}" "$ROOT/native/cluster.sh" "$@"
+}
+
+cmd_start_native() {
+  resolve_paths
+  [[ $DRAFTS == on || $DRAFTS == off ]] || die "DRAFTS must be on or off (got: $DRAFTS)"
+  local r
+  for r in 0 1; do
+    remote "$r" '[[ -x "$NATIVE_DIR/src/zig-out/native/bin/tensorfold-native" ]] || { echo "no engine build in $NATIVE_DIR: run ./redsnow.sh install"; exit 1; }
+[[ -f "$PACK_DIR/config.json" ]] || { echo "no model at $PACK_DIR: run ./redsnow.sh download"; exit 1; }
+[[ $DRAFTS != on || -f "$DRAFTER_DIR/config.json" ]] || { echo "no drafter at $DRAFTER_DIR: run ./redsnow.sh download"; exit 1; }' \
+      $(paths_kv) DRAFTS="$DRAFTS" || die "rank $r is not set up"
+  done
+  log "starting both ranks (the model loads in about 90 s)"
+  native_cluster start >/dev/null || die "start failed (./redsnow.sh logs)"
+  log "serving $SERVED_NAME at http://${RANK0#*@}:$PORT/v1"
+}
+
+# bench run: prefill (8K/32K + a needle), TTFT, decode (drafted == serial), C=4; bench conc: C=1/2/4/8, mixed load,
+# open-loop trace (every concurrent reply equals its solo one); bench all: both. On rank 0; results in bench/runs/.
+cmd_bench_native() {
+  resolve_paths
+  local what=${1:-all}
+  case $what in run|conc|all) ;; *) die "bench takes run, conc or all (ENGINE=python: smoke, decode, pin, long, sixcat)" ;; esac
+  local stamp bdir out rc=0 base="http://127.0.0.1:$PORT"
+  stamp="$(date +%Y-%m-%d-%H%M%S)-native-$what"; bdir="$BASE_DIR/bench"; out="$BASE_DIR/bench-runs/$stamp"
+  log "bench $what on rank 0; results in bench/runs/$stamp"
+  COPYFILE_DISABLE=1 tar -C "$ROOT/bench" --exclude ./records --exclude ./runs --exclude ./books \
+    --exclude ./longctx_prompts.json -cf - . | ssh "${SSH_OPTS[@]}" "$RANK0" "mkdir -p '$bdir' && tar -C '$bdir' -xf -"
+  remote 0 'cd "$BDIR/native"; mkdir -p "$OUT"; export API_KEY
+rc=0
+if [[ $WHAT == run || $WHAT == all ]]; then python3 run.py --base "$BASE" --out "$OUT/run.json" | tee "$OUT/run.log" || rc=1; fi
+if [[ $WHAT == conc || $WHAT == all ]]; then python3 conc.py --base "$BASE" --out "$OUT/conc.json" | tee "$OUT/conc.log" || rc=1; fi
+exit $rc' BDIR="$bdir" OUT="$out" WHAT="$what" BASE="$base" API_KEY="$API_KEY" || rc=$?
+  mkdir -p "$ROOT/bench/runs/$stamp"
+  ssh "${SSH_OPTS[@]}" "$RANK0" "tar -C '$out' -cf - ." | tar -C "$ROOT/bench/runs/$stamp" -xf -
+  return "$rc"
+}
+
+native() { [[ $ENGINE == native ]]; }
 case "${1:-help}" in
-  setup)     resolve_paths; cmd_preflight; push_constraints; cmd_install; cmd_download; cmd_view
+  setup)     resolve_paths; cmd_preflight; push_constraints
+             if native; then cmd_install_native; cmd_download; else cmd_install; cmd_download; cmd_view; fi
              log "setup complete: ./redsnow.sh start" ;;
   preflight) cmd_preflight ;;
-  install)   resolve_paths; push_constraints; cmd_install ;;
+  install)   resolve_paths; push_constraints; if native; then cmd_install_native; else cmd_install; fi ;;
   download)  cmd_download ;;
-  view)      cmd_view ;;
-  start)     cmd_start ;;
-  stop)      cmd_stop ;;
-  restart)   cmd_stop; cmd_start ;;
-  status)    cmd_status ;;
+  view)      native && die "view is for ENGINE=python (the native engine reads the pack as downloaded)"; cmd_view ;;
+  start)     if native; then cmd_start_native; else cmd_start; fi ;;
+  stop)      if native; then resolve_paths; native_cluster stop; else cmd_stop; fi ;;
+  restart)   if native; then cmd_start_native; else cmd_stop; cmd_start; fi ;;   # native start stops both ranks first
+  status)    if native; then resolve_paths; native_cluster status; echo; else cmd_status; fi ;;
   smoke)     cmd_smoke ;;
-  logs)      cmd_logs "${2:-0}" ;;
-  bench)     cmd_bench "${2:-all}" ;;
-  help|-h|--help) sed -n '2,14p' "$0" | sed 's/^# \{0,1\}//' ;;
+  logs)      if native; then resolve_paths; N="${N:-60}" native_cluster logs; else cmd_logs "${2:-0}"; fi ;;
+  bench)     if native; then cmd_bench_native "${2:-all}"; else cmd_bench "${2:-all}"; fi ;;
+  help|-h|--help) sed -n '2,18p' "$0" | sed 's/^# \{0,1\}//' ;;
   *) die "unknown command: $1 (./redsnow.sh help)" ;;
 esac

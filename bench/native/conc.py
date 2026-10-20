@@ -30,8 +30,7 @@ def timed_stream(base, body):
     """Like run.stream, but records the arrival time of every streamed chunk (absolute perf_counter)."""
     import urllib.request
     body = dict(body, stream=True, stream_options={"include_usage": True})
-    req = urllib.request.Request(base + "/v1/chat/completions", data=json.dumps(body).encode(),
-                                 headers={"Content-Type": "application/json"})
+    req = urllib.request.Request(base + "/v1/chat/completions", data=json.dumps(body).encode(), headers=run.HEADERS)
     t0 = time.perf_counter()
     stamps, out = [], {"usage": None, "tensorfold": None, "error": None, "t0": t0}
     with urllib.request.urlopen(req, timeout=3600) as r:
