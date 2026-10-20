@@ -163,6 +163,65 @@ Any other `TF_GLM_*`, `TF_MOE*` or `TENSORFOLD_*` variable you set reaches both 
 | `TF_GLM_KDA_CHUNKED` | `1` | prefill: KDA prompt chunks in chunked (WY) form. The three prefill settings together give 6–9% faster TTFT at 4K–16K |
 | `TF_GLM_MTP` | `0` | the checkpoint's own MTP head stays unloaded; DFlash2 drafts every request |
 
+## Native engine (TensorFold 1.1, in development)
+
+A second serving path runs RED-SNOW on native TensorFold 1.1 (Zig + CUDA) instead of the Python engine above. Engine:
+[`justincasey/TensorFold` tag `redsnow-native-v1.0.0`](https://github.com/justincasey/TensorFold/tree/redsnow-native-v1.0.0)
+(`76548777`: TensorFold v1.1.0 plus this project's 55 commits; development continues on branch `redsnow-native`).
+Against v1.0.2 on the same pair it measured:
+- prefill 1,507 / 1,657 tok/s at 8K / 32K;
+- decode 45.1 tok/s drafted;
+- 8 concurrent chats at 99 tok/s in total;
+- boot in ~90 s.
+
+```bash
+git clone -b redsnow-native-v1.0.0 https://github.com/justincasey/TensorFold.git ~/tf-native
+export TF_SRC=~/tf-native RANK0=<rank 0 ssh host> RANK1=<rank 1 ssh host> RANK1_LAN=<rank 1 LAN address>
+native/cluster.sh setup && native/cluster.sh sync && native/cluster.sh build && native/cluster.sh start
+python3 bench/native/run.py --base http://<rank 0>:8080          # prefill, TTFT, decode, C=4
+python3 bench/native/conc.py --base http://<rank 0>:8080         # C sweep, mixed load, open-loop trace
+```
+
+The launcher expects:
+- the model at `/home/spark/models/RED-SNOW-5.3-FLASH-EXL3-SAGE-4.91bpw`;
+- the drafter at `/home/spark/models/GLM-5.3-Flash-DFlash2`.
+
+`MODEL`, `DRAFTER` and `REMOTE` override these paths. `redsnow.sh` is unchanged.
+
+## Streams vs context (native engine)
+
+The native TensorFold 1.1 port (`native/cluster.sh`, in development) sets aside a fixed number of streams (requests
+decoding at once), each with its own context window. Every stream's KV cache is reserved at boot, so more streams
+means a shorter window per stream. Memory that the streams leave free becomes the prompt cache, which holds earlier
+prompts so that chat follow-ups skip prefill.
+
+`native/engine.env` sets the default, 2 streams with a 274,432-token window (67 × 4,096; the model allows
+1,048,576). Override it for one boot:
+
+```bash
+PARALLEL=8 CONTEXT=65536 native/cluster.sh -p A start
+```
+
+Measured on pair A (2026-10-20, engine `bf010924`, fp8 KV, 6 GiB reserve per rank). Values come from rank 0's
+startup line. The short TTFT is a ~220-token chat prompt on an idle server. Boot time does not depend on the stream
+count: it is the checkpoint read.
+
+| Streams | Context per stream | GiB per stream | Model + buffers per rank | Prompt cache | Short TTFT |
+|---|---|---|---|---|---|
+| 2 (default) | 274,432 | 2.02 | 100.19 GiB | 2.6 GiB | 473 ms |
+| 4 | 131,072 | 1.09 | 99.19 GiB | 2.4 GiB | 474 ms |
+| 8 | 65,536 | 0.66 | 98.73 GiB | 1.4 GiB | 476 ms |
+
+With 2 streams, a third request waits until a stream frees up. Requests are not refused. Measured effects of the
+stream count:
+
+- At 4 streams, a short chat sent while 4 others decoded and a 32K prompt filled waited 42.9 s.
+- At 8 streams, the same chat got its first token in about 0.7 s.
+- At 8 streams, 8 chats started together decode at 99 tok/s in total, 2.2× one stream.
+
+For chat-heavy or multi-user serving, use 4 or 8 streams. Use 2 when single requests need windows past 128K.
+`autoresearch.sh` always benchmarks 8 streams at 65,536, whatever `engine.env` says.
+
 ## How it is put together
 
 | Piece | What |
