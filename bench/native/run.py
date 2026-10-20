@@ -19,13 +19,15 @@ import time
 import urllib.request
 
 HERE = os.path.dirname(os.path.abspath(__file__))
+# JSON headers, plus the server's bearer key when API_KEY is set
+HEADERS = {"Content-Type": "application/json", **({"Authorization": "Bearer " + os.environ["API_KEY"]}
+                                                  if os.environ.get("API_KEY") else {})}
 
 
 def stream(base, body, timeout=3600):
     """POST a streamed chat completion; returns client timings and the final runtime fields."""
     body = dict(body, stream=True, stream_options={"include_usage": True})
-    req = urllib.request.Request(base + "/v1/chat/completions", data=json.dumps(body).encode(),
-                                 headers={"Content-Type": "application/json"})
+    req = urllib.request.Request(base + "/v1/chat/completions", data=json.dumps(body).encode(), headers=HEADERS)
     t0 = time.perf_counter()
     first = None
     out = {"usage": None, "tensorfold": None, "speculative": None, "error": None}
@@ -103,7 +105,7 @@ def main():
         text = ("You will be asked for an access code hidden in the text below.\n\n" + body[:mid] +
                 f"\nThe access code for the archive is {code}.\n" + body[mid:] +
                 "\n\nWhat is the access code for the archive? Reply with the code only.")
-        req = urllib.request.Request(a.base + "/v1/chat/completions", headers={"Content-Type": "application/json"},
+        req = urllib.request.Request(a.base + "/v1/chat/completions", headers=HEADERS,
                                      data=json.dumps({"model": "x", "messages": [{"role": "user", "content": text}],
                                                       "temperature": 0, "max_tokens": 24,
                                                       "chat_template_kwargs": {"enable_thinking": False}}).encode())

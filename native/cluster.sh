@@ -1,49 +1,68 @@
 #!/usr/bin/env bash
-# RED-SNOW-5.3-Flash on native TensorFold (justincasey/TensorFold tag redsnow-native-v1.0.0, a checkout at $TF_SRC),
-# TP=2 on one pair of DGX Sparks.
+# RED-SNOW-5.3-Flash on native TensorFold (justincasey/TensorFold tag redsnow-native-v1.0.0), TP=2 on two DGX Sparks.
+# ./redsnow.sh calls this (install, start, stop, status, logs); it also runs on its own:
 #
-#   native/cluster.sh [-p A|B] fabric          print the pair's two-rail link (read-only)
-#   native/cluster.sh [-p A|B] setup           Zig 0.17.0 on both nodes when missing
-#   native/cluster.sh [-p A|B] sync            rsync the engine worktree ($TF_SRC) to both nodes
-#   native/cluster.sh [-p A|B] build           zig build native (sm_121) on both nodes, in parallel
-#   native/cluster.sh [-p A|B] start           rank 1 then rank 0; returns once /health answers (or fails)
-#   native/cluster.sh [-p A|B] stop | status | logs
+#   native/cluster.sh fabric          print the pair's two-rail link (read-only)
+#   native/cluster.sh sync            rsync an engine checkout ($TF_SRC, for development) to both nodes
+#   native/cluster.sh build           zig build native (sm_121) once on rank 0, copied to rank 1 through this machine
+#   native/cluster.sh start           rank 1 then rank 0; returns once /health answers (or fails)
+#   native/cluster.sh stop | status | logs
 #
-# Pair A = dgx-worker-2 (rank 0) + dgx-worker-3; pair B = dgx-head (rank 0) + dgx-worker (this lab's presets).
-# Other machines: RANK0=<ssh host> RANK1=<ssh host> RANK1_LAN=<rank 1's LAN address> override the preset.
-# Every TF_GLM_*, TF_ROCE_*, TF_HEAT_* and TENSORFOLD_* variable in the caller's environment reaches both ranks.
+# The nodes are RANK0 / RANK1 (ssh targets) from the environment or the repo's .env. On each node the engine lives in
+# REMOTE (default <BASE_DIR>/native: src/ the engine checkout, lib/ libnccl.so.2, zig/ Zig 0.17.0) and the models in
+# MODELS_DIR (default <BASE_DIR>/models, where ./redsnow.sh download puts them; BASE_DIR default ~/redsnow).
+# -p A / -p B select this project's lab pairs instead. Every TF_GLM_*, TF_ROCE_*, TF_HEAT_*, TENSORFOLD_* and NCCL_*
+# variable in the caller's environment reaches both ranks.
 set -euo pipefail
+HERE=$(cd "$(dirname "$0")" && pwd)
 
-PAIR=A
+PAIR=""
 while getopts "p:" o; do case $o in p) PAIR=$OPTARG ;; *) exit 2 ;; esac; done
 shift $((OPTIND - 1))
 CMD=${1:-status}
 
+# KEY=VALUE files: the caller's environment wins, then native/engine.env, then the repo's .env (its node keys only)
+load() { # file keys-regex
+  [[ -f $1 ]] || return 0
+  local k v
+  while IFS='=' read -r k v || [[ -n $k ]]; do
+    v=${v%%#*}; v=${v%"${v##*[![:space:]]}"}; v=${v#\"}; v=${v%\"}
+    [[ $k =~ ^($2)$ && -n $v && -z ${!k+set} ]] && export "$k=$v"
+  done < "$1"
+  return 0
+}
+load "$HERE/engine.env" '[A-Z][A-Z0-9_]*'
+load "$HERE/../.env" 'RANK0|RANK1|BASE_DIR|MODELS_DIR|DRAFTS|API_KEY|PORT|HOST|SERVED_NAME'
+
+log() { printf '[cluster %s] %s\n' "${PAIR:-env}" "$*" >&2; }
+on() { local h=$1; shift; ssh -o BatchMode=yes -o StrictHostKeyChecking=accept-new -o ConnectTimeout=10 "$h" "$@"; }
+
 case $PAIR in
-  A) R0=dgx-worker-2 R1=dgx-worker-3 R1_LAN=192.168.1.18 ;;
-  B) R0=dgx-head R1=dgx-worker R1_LAN=192.168.1.122 ;;
-  *) echo "pair A or B" >&2; exit 2 ;;
+  A) R0=dgx-worker-2 R1=dgx-worker-3 LAB=1 ;;   # this project's lab pairs
+  B) R0=dgx-head R1=dgx-worker LAB=1 ;;
+  "") [[ -n ${RANK0:-} && -n ${RANK1:-} ]] || { echo "set RANK0 and RANK1 (ssh targets) in .env or the environment" >&2; exit 2; }
+      R0=$RANK0 R1=$RANK1 LAB=0 ;;
+  *) echo "-p takes A or B (or omit it: RANK0 / RANK1)" >&2; exit 2 ;;
 esac
-R0=${RANK0:-$R0} R1=${RANK1:-$R1} R1_LAN=${RANK1_LAN:-$R1_LAN}
-# The recipe's engine settings (native/engine.env, KEY=VALUE lines); the caller's environment wins.
-if [[ -f "$(dirname "$0")/engine.env" ]]; then
-  while IFS='=' read -r k v; do [[ $k =~ ^[A-Z][A-Z0-9_]*$ && -z ${!k+set} ]] && export "$k=$v"; done < "$(dirname "$0")/engine.env"
+
+if [[ $LAB == 1 ]]; then
+  TF_SRC=${TF_SRC:-$HOME/projects/redsnow-port/tf-native} REMOTE=${REMOTE:-/home/spark/redsnow-native}
+  MODELS_DIR=${MODELS_DIR:-/home/spark/models} ZIG_DIR=${ZIG_DIR:-/home/spark/zig-tool/zig-aarch64-linux-0.17.0}
+else
+  if [[ -z ${BASE_DIR:-} ]]; then BASE_DIR="$(on "$R0" 'printf %s "$HOME"')/redsnow" || { log "ssh to $R0 failed"; exit 1; }; fi
+  REMOTE=${REMOTE:-$BASE_DIR/native} MODELS_DIR=${MODELS_DIR:-$BASE_DIR/models}
+  ZIG_DIR=${ZIG_DIR:-$REMOTE/zig/zig-aarch64-linux-0.17.0} TF_SRC=${TF_SRC:-}
 fi
-TF_SRC=${TF_SRC:-$HOME/projects/redsnow-port/tf-native}
-REMOTE=${REMOTE:-/home/spark/redsnow-native}
-MODEL=${MODEL:-/home/spark/models/RED-SNOW-5.3-FLASH-EXL3-SAGE-4.91bpw}
-DRAFTER=${DRAFTER:-/home/spark/models/GLM-5.3-Flash-DFlash2}   # incoai/GLM-5.3-Flash-DFlash2 @ bf582e4e (the recipe's)
-ZIG_DIR=${ZIG_DIR:-/home/spark/zig-tool/zig-aarch64-linux-0.17.0}
+MODEL=${MODEL:-$MODELS_DIR/RED-SNOW-5.3-FLASH-EXL3-SAGE-4.91bpw}   # vcruz305's pack @ f6b89637 (./redsnow.sh download)
+DRAFTER=${DRAFTER:-$MODELS_DIR/GLM-5.3-Flash-DFlash2}             # incoai/GLM-5.3-Flash-DFlash2 @ bf582e4e
+HOST=${HOST:-0.0.0.0}
 PORT=${PORT:-8080}
 MASTER_PORT=${MASTER_PORT:-29741}
-CONTEXT=${CONTEXT:-131072}
-PARALLEL=${PARALLEL:-4}
+CONTEXT=${CONTEXT:-274432}
+PARALLEL=${PARALLEL:-2}
 DRAFTS=${DRAFTS:-on}
-SERVED=${SERVED:-RED-SNOW-5.3-Flash}
+SERVED=${SERVED_NAME:-${SERVED:-RED-SNOW-5.3-Flash}}
 READY_S=${READY_S:-1200}
-
-log() { printf '[cluster %s] %s\n' "$PAIR" "$*" >&2; }
-on() { local h=$1; shift; ssh -o BatchMode=yes -o ConnectTimeout=10 "$h" "$@"; }
 
 # The pair's rails: every rank-0 RDMA netdev whose /24 a rank-1 netdev shares, in HCA-name order.
 # Prints: R0_IF R0_HCAS R0_IP R1_IF R1_HCAS (comma-joined HCAs; the first netdev carries NCCL's sockets).
@@ -74,10 +93,12 @@ engine_env() {
 }
 
 start_rank() { # host rank if hcas
-  local host=$1 rank=$2 iface=$3 hcas=$4 master=$5 port=$6
-  local args="serve $MODEL --name $SERVED --host 0.0.0.0 --port $port --context $CONTEXT --parallel $PARALLEL"
+  local host=$1 rank=$2 iface=$3 hcas=$4 master=$5 port=$6 bind=$HOST
+  [[ $rank == 1 ]] && bind=127.0.0.1   # only rank 0 serves the API
+  local args="serve $MODEL --name $SERVED --host $bind --port $port --context $CONTEXT --parallel $PARALLEL"
   [[ $DRAFTS == on ]] && args+=" --drafter $DRAFTER" || args+=" --no-drafts"
-  args+="${EXTRA_ARGS:+ $EXTRA_ARGS}"   # extra serve flags (e.g. --kv-cache fp8)
+  [[ -n ${API_KEY:-} ]] && args+=" --api-key $API_KEY"
+  args+="${EXTRA_ARGS:+ $EXTRA_ARGS}"   # extra serve flags (engine.env: --kv-cache fp8)
   on "$host" "mkdir -p $REMOTE/logs $REMOTE/run
     [[ -f $REMOTE/logs/rank$rank.log ]] && mv -f $REMOTE/logs/rank$rank.log $REMOTE/logs/rank$rank.prev.log
     $(engine_env) export TF_GLM_RANK=$rank TF_GLM_WORLD=2 NCCL_COMM_ID=$master:$MASTER_PORT \
@@ -97,12 +118,13 @@ stop_rank() {
 
 case $CMD in
   fabric) fabric ;;
-  setup)
+  setup) # Zig 0.17.0 on both nodes (./redsnow.sh install does this and the rest)
     for h in "$R0" "$R1"; do
       on "$h" "[[ -x $ZIG_DIR/zig ]] && exit 0; mkdir -p $(dirname $ZIG_DIR) && cd $(dirname $ZIG_DIR) &&
         curl -fsSL https://ziglang.org/download/0.17.0/zig-aarch64-linux-0.17.0.tar.xz | tar xJ" && log "$h: zig $(on "$h" "$ZIG_DIR/zig version")"
     done ;;
   sync)
+    [[ -n $TF_SRC ]] || { log "sync needs TF_SRC (an engine checkout here); ./redsnow.sh install clones the pinned tag instead"; exit 2; }
     for h in "$R0" "$R1"; do
       { on "$h" "mkdir -p $REMOTE/src" && rsync -a --delete --exclude .zig-cache --exclude zig-out --exclude .git "$TF_SRC/" "$h:$REMOTE/src/"; } &
     done
@@ -112,9 +134,12 @@ case $CMD in
   build) # once, on rank 0: the ranks compare their executables' digests, so rank 1 runs the same bytes
     on "$R0" "cd $REMOTE/src && $ZIG_DIR/zig build native -Dnvcc=/usr/local/cuda/bin/nvcc -Dsm=121 > $REMOTE/build.log 2>&1 ||
       { tail -40 $REMOTE/build.log; exit 1; }" || { log "build failed"; exit 1; }
-    on "$R0" "rsync -a --delete -e 'ssh -o BatchMode=yes -o StrictHostKeyChecking=accept-new' $REMOTE/src/zig-out/ spark@$R1_LAN:$REMOTE/src/zig-out/" \
+    on "$R0" "tar -C $REMOTE/src/zig-out -cf - ." | on "$R1" "rm -rf $REMOTE/src/zig-out && mkdir -p $REMOTE/src/zig-out && tar -C $REMOTE/src/zig-out -xf -" \
       || { log "copy to $R1 failed"; exit 1; }
-    log "built on $R0, copied to $R1: $(on "$R0" "sha256sum $REMOTE/src/zig-out/native/bin/tensorfold-native | cut -c1-12")" ;;
+    a=$(on "$R0" "sha256sum $REMOTE/src/zig-out/native/bin/tensorfold-native | cut -c1-12")
+    b=$(on "$R1" "sha256sum $REMOTE/src/zig-out/native/bin/tensorfold-native | cut -c1-12")
+    [[ $a == "$b" ]] || { log "rank 1's binary differs ($b vs $a)"; exit 1; }
+    log "built on $R0, copied to $R1: $a" ;;
   start)
     read -r r0_if r0_hca r0_ip r1_if r1_hca < <(fabric)
     log "link: $R0 $r0_if [$r0_hca] $r0_ip <-> $R1 $r1_if [$r1_hca]"
