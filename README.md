@@ -171,7 +171,7 @@ Against v1.0.2 on the same pair it measured:
 - prefill 1,507 / 1,657 tok/s at 8K / 32K;
 - decode 45.1 tok/s drafted;
 - 8 concurrent chats at 99 tok/s in total;
-- boot in ~100 s.
+- boot in ~90 s.
 
 ```bash
 git clone -b redsnow-native https://github.com/justincasey/TensorFold.git ~/tf-native
