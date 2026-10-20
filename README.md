@@ -165,8 +165,9 @@ Any other `TF_GLM_*`, `TF_MOE*` or `TENSORFOLD_*` variable you set reaches both 
 
 ## Native engine (TensorFold 1.1, in development)
 
-A second serving path runs RED-SNOW on native TensorFold 1.1 (Zig + CUDA) instead of the Python engine above:
-[`justincasey/TensorFold` branch `redsnow-native`](https://github.com/justincasey/TensorFold/tree/redsnow-native).
+A second serving path runs RED-SNOW on native TensorFold 1.1 (Zig + CUDA) instead of the Python engine above. Engine:
+[`justincasey/TensorFold` tag `redsnow-native-v1.0.0`](https://github.com/justincasey/TensorFold/tree/redsnow-native-v1.0.0)
+(`76548777`: TensorFold v1.1.0 plus this project's 55 commits; development continues on branch `redsnow-native`).
 Against v1.0.2 on the same pair it measured:
 - prefill 1,507 / 1,657 tok/s at 8K / 32K;
 - decode 45.1 tok/s drafted;
@@ -174,7 +175,7 @@ Against v1.0.2 on the same pair it measured:
 - boot in ~90 s.
 
 ```bash
-git clone -b redsnow-native https://github.com/justincasey/TensorFold.git ~/tf-native
+git clone -b redsnow-native-v1.0.0 https://github.com/justincasey/TensorFold.git ~/tf-native
 export TF_SRC=~/tf-native RANK0=<rank 0 ssh host> RANK1=<rank 1 ssh host> RANK1_LAN=<rank 1 LAN address>
 native/cluster.sh setup && native/cluster.sh sync && native/cluster.sh build && native/cluster.sh start
 python3 bench/native/run.py --base http://<rank 0>:8080          # prefill, TTFT, decode, C=4

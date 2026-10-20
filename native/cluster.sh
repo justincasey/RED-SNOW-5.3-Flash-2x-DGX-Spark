@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
-# RED-SNOW-5.3-Flash on native TensorFold (redsnow-native branch), TP=2 on one pair of DGX Sparks.
+# RED-SNOW-5.3-Flash on native TensorFold (justincasey/TensorFold tag redsnow-native-v1.0.0, a checkout at $TF_SRC),
+# TP=2 on one pair of DGX Sparks.
 #
 #   native/cluster.sh [-p A|B] fabric          print the pair's two-rail link (read-only)
 #   native/cluster.sh [-p A|B] setup           Zig 0.17.0 on both nodes when missing
