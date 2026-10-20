@@ -204,7 +204,7 @@ echo "ok   memory: ${mem} GiB"
 mine=" $(pgrep -d " " -f "tensorfol[d] serve" || true) "
 busy=$(nvidia-smi --query-compute-apps=pid,process_name --format=csv,noheader | while IFS=", " read -r pid name; do
   [[ "$mine" == *" $pid "* ]] || echo "$pid $name"; done)
-[[ -z "$busy" ]] || echo "WARN other GPU processes (the model needs ~103 GiB a node): $busy"
+[[ -z "$busy" ]] || echo "WARN other GPU processes (the model needs ~100 GiB a node): $busy"
 ' $(paths_kv)
   detect_fabric
   log "link: rank 0 $RANK0_IF/$RANK0_HCA $RANK0_FABRIC_IP <-> rank 1 $RANK1_IF/$RANK1_HCA $RANK1_FABRIC_IP"

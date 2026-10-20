@@ -473,7 +473,9 @@ prose, 35–44 on code and structured output, and up to 65 on highly predictable
 **Engine**
 
 - [TensorFold](https://github.com/ashhart/TensorFold) by Ash Hart and the TensorFold contributors, Apache-2.0
-  (code before 0.6.0 also MIT): the engine.
+  (code before 0.6.0 also MIT): the engine. The native engine is TensorFold v1.1.0's Zig + CUDA server, with these
+  upstream changes carried unchanged under their authors: the first-token handoff (Jonathan Regan-Beasley; Ash
+  Hart) and idle ranks sleeping between streams (upstream PR #1053, ported to 1.1.0's follow protocol).
 - [vcruz305/TensorFold](https://github.com/vcruz305/TensorFold) `glm53-tp4-spark`: the GLM-5.3 TP=4 CUDA engine
   by drowzeys (prompt experts, decode linears, concurrency, sequence-parallel prefill, NCCL grouping) and fixes by
   vcruz305. The fork carries these commits unchanged, under their original authors.
