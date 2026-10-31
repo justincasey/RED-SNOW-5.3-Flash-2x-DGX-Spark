@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# RED-SNOW-5.3-Flash on native TensorFold (justincasey/TensorFold tag redsnow-native-v1.0.0), TP=2 on two DGX Sparks.
+# RED-SNOW-5.3-Flash on native TensorFold (justincasey/TensorFold tag redsnow-native-v1.1.0), TP=2 on two DGX Sparks.
 # ./redsnow.sh calls this (install, start, stop, status, logs); it also runs on its own:
 #
 #   native/cluster.sh fabric          print the pair's two-rail link (read-only)
@@ -11,8 +11,8 @@
 # The nodes are RANK0 / RANK1 (ssh targets) from the environment or the repo's .env. On each node the engine lives in
 # REMOTE (default <BASE_DIR>/native: src/ the engine checkout, lib/ libnccl.so.2, zig/ Zig 0.17.0) and the models in
 # MODELS_DIR (default <BASE_DIR>/models, where ./redsnow.sh download puts them; BASE_DIR default ~/redsnow).
-# -p A / -p B select this project's lab pairs instead. Every TF_GLM_*, TF_ROCE_*, TF_HEAT_*, TENSORFOLD_* and NCCL_*
-# variable in the caller's environment reaches both ranks.
+# -p A / -p B select this project's lab pairs instead. Every TF_GLM_*, TF_KV_*, TF_ROCE_*, TF_HEAT_*, TENSORFOLD_* and
+# NCCL_* variable in the caller's environment reaches both ranks.
 set -euo pipefail
 HERE=$(cd "$(dirname "$0")" && pwd)
 
@@ -46,7 +46,7 @@ case $PAIR in
 esac
 
 if [[ $LAB == 1 ]]; then
-  TF_SRC=${TF_SRC:-$HOME/projects/redsnow-port/tf-native} REMOTE=${REMOTE:-/home/spark/redsnow-native}
+  TF_SRC=${TF_SRC:-$HOME/projects/redsnow-port/tf-native-119} REMOTE=${REMOTE:-/home/spark/redsnow-native}
   MODELS_DIR=${MODELS_DIR:-/home/spark/models} ZIG_DIR=${ZIG_DIR:-/home/spark/zig-tool/zig-aarch64-linux-0.17.0}
 else
   if [[ -z ${BASE_DIR:-} ]]; then BASE_DIR="$(on "$R0" 'printf %s "$HOME"')/redsnow" || { log "ssh to $R0 failed"; exit 1; }; fi
@@ -88,7 +88,7 @@ fabric() {
 }
 
 engine_env() {
-  env | grep -E '^(TF_GLM_[A-Z0-9_]+|TF_ROCE_[A-Z0-9_]+|TF_HEAT_[A-Z0-9_]+|TENSORFOLD_[A-Z0-9_]+|NCCL_[A-Z0-9_]+)=' \
+  env | grep -E '^(TF_GLM_[A-Z0-9_]+|TF_KV_[A-Z0-9_]+|TF_ROCE_[A-Z0-9_]+|TF_HEAT_[A-Z0-9_]+|TENSORFOLD_[A-Z0-9_]+|NCCL_[A-Z0-9_]+)=' \
     | grep -vE '^NCCL_(IB_HCA|SOCKET_IFNAME|COMM_ID)=' | sort | while IFS='=' read -r k v; do printf 'export %s=%q; ' "$k" "$v"; done
 }
 
