@@ -1,3 +1,5 @@
+![RED-SNOW-5.3-Flash: native inference recipe on 2 × DGX Spark GB10, TP=2, EXL3 4.91 bpw, fp8 KV, DFlash2](assets/redsnow-hero.png)
+
 # RED-SNOW-5.3-Flash on two DGX Sparks
 
 Serve [RED-SNOW-5.3-FLASH](https://huggingface.co/Blackfrost-AI/RED-SNOW-5.3-FLASH-BF16), Blackfrost-AI's
