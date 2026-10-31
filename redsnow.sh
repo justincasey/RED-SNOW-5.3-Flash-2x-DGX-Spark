@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # RED-SNOW-5.3-Flash (EXL3 SAGE 4.91bpw) on two DGX Sparks joined by one QSFP cable, TensorFold TP=2.
-# ENGINE=native (default): the Zig TensorFold 1.1 engine (justincasey/TensorFold tag redsnow-native-v1.0.0).
+# ENGINE=native (default): the Zig TensorFold 1.1.9 engine (justincasey/TensorFold tag redsnow-native-v1.1.0).
 # ENGINE=python: v1.0.2's Python engine (tag redsnow-v1.0.2), as before.
 #
 # Run from any machine that reaches both Sparks over key-based ssh. Rank 0 serves the OpenAI-compatible API.
@@ -46,7 +46,7 @@ log() { printf '%s %s\n' "$(date +%H:%M:%S)" "$*" >&2; }
 die() { log "error: $*"; exit 1; }
 
 # ── defaults ─────────────────────────────────────────────────────────────────
-ENGINE="${ENGINE:-native}"                               # native: Zig TensorFold 1.1 (default); python: v1.0.2's engine
+ENGINE="${ENGINE:-native}"                               # native: Zig TensorFold 1.1.9 (default); python: v1.0.2's engine
 [[ $ENGINE == native || $ENGINE == python ]] || die "ENGINE must be native or python (got: $ENGINE)"
 # what the caller or .env set (native passes only these on; native/engine.env holds the native defaults)
 SET_CONTEXT="${CONTEXT:-}" SET_PARALLEL="${PARALLEL:-}" SET_KV_DTYPE="${KV_DTYPE:-}"
@@ -57,8 +57,8 @@ MODELS_DIR="${MODELS_DIR:-}"                             # empty: $BASE_DIR/mode
 
 TF_REPO="${TF_REPO:-https://github.com/justincasey/TensorFold.git}"
 if [[ $ENGINE == native ]]; then
-  TF_REF="${TF_REF:-redsnow-native-v1.0.0}"
-  TF_COMMIT="${TF_COMMIT:-76548777e61cb1402b81058564c34cb8d9af1a74}"   # install refuses any other commit
+  TF_REF="${TF_REF:-redsnow-native-v1.1.0}"
+  TF_COMMIT="${TF_COMMIT:-ae6404e553b3c3def6da9afea85724719af65e02}"   # install refuses any other commit
 else
   TF_REF="${TF_REF:-redsnow-v1.0.2}"
   TF_COMMIT="${TF_COMMIT:-f5d727aec09e3d25aac6435458bd3b467b4cf952}"
