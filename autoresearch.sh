@@ -1,7 +1,9 @@
 #!/usr/bin/env bash
 # The benchmark for RED-SNOW-5.3-Flash on REXL3 ($REXL3_SRC, a checkout of justincasey/REXL3 branch redsnow): sync and
-# build the engine on pair A (dgx-head rank 0 + dgx-worker rank 1), boot both ranks cold (page caches dropped) with
-# rexl3/engine.env, run bench/rexl3/bench.py's fixed workload, stop.
+# build the engine on one pair (PAIR=A: dgx-head + dgx-worker, the official run; PAIR=B: dgx-worker-2 + dgx-worker-3, so
+# two candidates are measured at once), boot both ranks cold (page caches dropped) with rexl3/engine.env, run
+# bench/rexl3/bench.py's fixed workload, stop. CANDIDATE_SRC names the engine checkout (default ~/projects/REXL3);
+# CANDIDATE_ENV names a KEY=VALUE file whose settings override rexl3/engine.env for this run only.
 #
 # Primary metric target_score (higher is better; 1.0 = every target met):
 #   (decode_prose_tok_s/70 * prefill_32k_tok_s/3000 * min(1, kv_tokens/2^20) * min(1, 100/boot_s)) ^ (1/4)
@@ -15,18 +17,26 @@ cd "$(dirname "$0")"
 PAIR=${PAIR:-A}
 case $PAIR in A) R0=dgx-head HOST=192.168.1.121 ;; B) R0=dgx-worker-2 HOST=192.168.1.123 ;; *) echo "PAIR A or B" >&2; exit 2 ;; esac
 # rexl3/engine.env is the only source of engine settings: drop every engine variable a caller's shell may still carry
-# (a stale REXL3_GLM_PREFILL_CONTRACT once overrode the file), and run the main lane on ~/projects/REXL3
+# (a stale REXL3_GLM_PREFILL_CONTRACT once overrode the file), then apply the candidate's file if one is named
 while IFS='=' read -r k _; do [[ $k =~ ^[A-Z][A-Z0-9_]*$ ]] && unset "$k"; done < <(grep -vE '^(#|$)' rexl3/engine.env)
 for k in $(env | sed -n 's/^\(REXL3_[A-Z0-9_]*\|NCCL_[A-Z0-9_]*\)=.*/\1/p'); do unset "$k"; done
 unset OWNER COLD NSYS_ARGS
-export REXL3_SRC=$HOME/projects/REXL3
-echo "ASI engine=$(git -C "$REXL3_SRC" rev-parse --short=12 HEAD)$(git -C "$REXL3_SRC" diff --quiet HEAD || echo +dirty) env=$(grep -vE '^(#|$)' rexl3/engine.env | tr '\n' ' ')"
+cand_env=""
+if [[ -n ${CANDIDATE_ENV:-} ]]; then
+  set -a; source "$CANDIDATE_ENV"; set +a
+  cand_env=$(grep -vE '^(#|$)' "$CANDIDATE_ENV" | tr '\n' ' ')
+fi
+export REXL3_SRC=${CANDIDATE_SRC:-$HOME/projects/REXL3}
+echo "ASI engine=$(git -C "$REXL3_SRC" rev-parse --short=12 HEAD)$(git -C "$REXL3_SRC" diff --quiet HEAD || echo +dirty) pair=$PAIR env=$(grep -vE '^(#|$)' rexl3/engine.env | tr '\n' ' ') candidate_env=$cand_env"
 OUT=.work/rexl3-runs/$(date +%Y%m%d-%H%M%S)-$PAIR
 mkdir -p "$OUT"
 
+# wait for the pair (a lane may hold it for a test session), hold it, and release it (stop) however this run ends
+for _ in $(seq "${LOCK_WAIT_S:-1500}"); do rexl3/cluster.sh -p "$PAIR" hold >/dev/null 2>&1 && break; sleep 1; done
+rexl3/cluster.sh -p "$PAIR" hold >&2
+trap 'N=300 rexl3/cluster.sh -p "$PAIR" logs > "$OUT/ranks.log" 2>&1 || true; rexl3/cluster.sh -p "$PAIR" stop >&2 || true' EXIT
 rexl3/cluster.sh -p "$PAIR" sync >&2
 rexl3/cluster.sh -p "$PAIR" build >&2
-trap 'N=300 rexl3/cluster.sh -p "$PAIR" logs > "$OUT/ranks.log" 2>&1 || true; rexl3/cluster.sh -p "$PAIR" stop >&2 || true' EXIT
 boot=$(COLD=1 rexl3/cluster.sh -p "$PAIR" start | sed -n 's/^boot_s=//p')
 [[ -n $boot ]] || { echo "boot failed" >&2; exit 1; }
 rexl3/cluster.sh -p "$PAIR" boot > "$OUT/boot.log" 2>&1 || true
