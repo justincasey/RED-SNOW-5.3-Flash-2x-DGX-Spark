@@ -3,7 +3,7 @@
 
 Phases, in order, on a freshly started server (empty prefix cache):
   warm     one drafted and one serial 64-token reply (kernels, first graphs)
-  prefill  pinned 8K and 32K Moby-Dick slices (../native/prefill_prompts.json), cold, 8 tokens out:
+  prefill  pinned 8K and 32K Moby-Dick slices (../native/prefill_prompts.json), cold, 64 tokens out (pinned):
            tok/s = prompt tokens / client time to the first streamed token
   needle   a code buried mid-way through ~6K tokens must come back
   ttft     a ~220-token chat prompt, client time to the first streamed token
@@ -135,7 +135,7 @@ def main():
 
     if "prefill" in phases:
         for p in longs:
-            r = stream(a.base, greedy(p))
+            r = stream(a.base, greedy(p, max_tokens=64))  # 64 tokens: a reply long enough to fingerprint the prompt's state
             if not ok(r, p["name"]):
                 continue
             n = r["usage"]["prompt_tokens"]
@@ -173,7 +173,7 @@ def main():
         if ok(r, "ttft"):
             m["ttft_short_ms"] = r["ttft_s"] * 1000
 
-    serial = {}
+    serial, serial_ids = {}, {}
     if "decode" in phases:
         rows = []
         for p in prompts:
@@ -184,7 +184,7 @@ def main():
             if d["ids"] != s["ids"]:
                 k = next((i for i, (x, y) in enumerate(zip(d["ids"], s["ids"])) if x != y), min(len(d["ids"]), len(s["ids"])))
                 fail(f"{p['name']}: drafted reply differs from serial at token {k}")
-            serial[p["name"]] = s["sha"]
+            serial[p["name"]], serial_ids[p["name"]] = s["sha"], s["ids"]
             spec = d["usage"].get("spec") or {}
             rows.append({"prompt": p["name"], "tok_s": d["decode_tok_s"], "serial_tok_s": s["decode_tok_s"],
                          "tpr": len(d["ids"]) / spec["rounds"] if spec.get("rounds") else None, "sha": s["sha"],
@@ -201,10 +201,12 @@ def main():
 
     solo = {}
     if phases & {"conc", "mixed", "trace"}:
-        for p in chats:  # each chat alone: the reference for concurrent == solo
+        for p in chats:  # each chat alone: the reference for concurrent == solo, and itself the serial reply's first tokens
             r = stream(a.base, greedy(p, max_tokens=256))
             if ok(r, f"solo {p['name']}"):
                 solo[p["name"]] = r["ids"]
+                if p["name"] in serial_ids and r["ids"] != serial_ids[p["name"]][:len(r["ids"])]:
+                    fail(f"solo {p['name']}: reply differs from the serial reply's first {len(r['ids'])} tokens")
 
     def same_as_solo(p, o, what):
         if p["name"] in solo and o["ids"] != solo[p["name"]]:
