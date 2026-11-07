@@ -6,6 +6,8 @@ Phases, in order, on a freshly started server (empty prefix cache):
   prefill  pinned 8K and 32K Moby-Dick slices (../native/prefill_prompts.json), cold, the passage continued (thinking off, 128 tokens, pinned):
            tok/s = prompt tokens / client time to the first streamed token
   needle   a code buried mid-way through ~6K tokens must come back
+  cache    a follow-up turn on a salted ~8K prefix: cached (drafted and serial) vs "prefix_cache": false must be the
+           same tokens; ttft_cached_ms, ttft_uncached_ms, cache_hit_tokens (a hit is required when the server has a cache)
   ttft     a ~220-token chat prompt, client time to the first streamed token
   decode   ../sweep6_prompts.json, greedy, 512 tokens, drafted and "draft": false, thinking per the server default;
            tok/s = (tokens - 1) / (last chunk - first chunk); the two replies' token ids must be equal
@@ -16,8 +18,9 @@ Phases, in order, on a freshly started server (empty prefix cache):
 (the GLM family serves no prompt_logprobs, so quality is held by exactness: serial ids against a pinned reference)
 
 Gates (each failure prints FAIL and voids target_score): errors, drafted != serial, concurrent != solo, a missed needle,
-a warm prompt reported as cached, and, when --ref names a pinned reference (--pin writes one), serial ids or the long
-prompts' and the needle's replies that differ from it (byte-exact: no output may drift from the reference engine).
+a warm prompt reported as cached, cached != uncached, a cache that never hits, and, when --ref names a pinned
+reference (--pin writes one), serial ids or the long prompts' and the needle's replies that differ from it (byte-exact:
+no output may drift from the reference engine).
 
 target_score = (decode_prose/70 * prefill_32k/3000 * min(1, kv_tokens/2^20) * min(1, 100/boot_s)) ^ (1/4)
 """
@@ -53,7 +56,7 @@ def stream(base, body, timeout=3600):
     """POST a streamed chat completion with token ids; returns ids, usage, chunk arrival stamps, client timings."""
     body = dict(body, stream=True, stream_options={"include_usage": True}, return_token_ids=True)
     req = urllib.request.Request(base + "/v1/chat/completions", data=json.dumps(body).encode(), headers=HEADERS)
-    out = {"ids": [], "usage": None, "error": None, "stamps": [], "fingerprint": None, "t0": time.perf_counter()}
+    out = {"ids": [], "text": "", "usage": None, "error": None, "stamps": [], "fingerprint": None, "t0": time.perf_counter()}
     try:
         with urllib.request.urlopen(req, timeout=timeout) as r:
             for raw in r:
@@ -68,7 +71,9 @@ def stream(base, body, timeout=3600):
                     out["error"] = ev["error"]
                 out["fingerprint"] = ev.get("system_fingerprint") or out["fingerprint"]
                 for ch in ev.get("choices") or []:
-                    ids = (ch.get("delta") or {}).get("token_ids") or ch.get("token_ids") or []
+                    delta = ch.get("delta") or {}
+                    out["text"] += delta.get("content") or ""
+                    ids = delta.get("token_ids") or ch.get("token_ids") or []
                     if ids:
                         out["ids"].extend(ids)
                         out["stamps"].append(time.perf_counter())
@@ -114,7 +119,7 @@ def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--base", default=os.environ.get("BASE", "http://127.0.0.1:8080"))
     ap.add_argument("--out", default="")
-    ap.add_argument("--phases", default="warm,prefill,needle,ttft,decode,conc,mixed,trace")
+    ap.add_argument("--phases", default="warm,prefill,needle,cache,ttft,decode,conc,mixed,trace")
     ap.add_argument("--boot-s", type=float, default=0.0)
     ap.add_argument("--kv-tokens", type=float, default=0.0)
     ap.add_argument("--ref", default="", help="pinned reference to gate serial ids against")
@@ -133,6 +138,12 @@ def main():
     rec = {"base": a.base, "started": time.strftime("%Y-%m-%dT%H:%M:%S")}
     m = {}
     pinned_ids = {}  # the long prompts' and the needle's replies: the prefill path's numerics, pinned like the serial ids
+    try:  # a server with a prefix cache reports how far it reaches; without one the field is null
+        models = json.loads(urllib.request.urlopen(a.base + "/v1/models", timeout=30).read())["data"][0]
+        cache_on = bool(models.get("prefix_cache_reach_tokens"))
+    except Exception:  # noqa: BLE001 - an unreachable server fails every phase anyway
+        cache_on = False
+    m["cache_on"] = 1.0 if cache_on else 0.0
 
     if "warm" in phases:
         for d in (True, False):
@@ -180,6 +191,38 @@ def main():
             fail(f"needle: {code!r} not in {reply!r}")
         rec["needle"] = reply
         pinned_ids["needle"] = hashlib.sha256(reply.encode()).hexdigest()[:16]
+
+    if "cache" in phases:
+        # prompt caching: a follow-up turn on a long shared prefix. Turn 1 (an ~8K passage, salted so nothing earlier
+        # matches it) stores the prompt's state; turn 2 repeats it plus the reply and a new question. Turn 2 runs three
+        # ways: `"prefix_cache": false` (the uncached reference: nothing looked up or stored), cached and drafted, cached
+        # and serial. All three replies must be the same tokens. When the server advertises a cache, turn 2 must hit it.
+        nothink = {"chat_template_kwargs": {"enable_thinking": False}}
+        p1 = cold(longs[0], f"cache-{time.time_ns()}")
+        msgs = [dict(x) for x in p1["messages"]]
+        msgs[-1]["content"] = msgs[-1]["content"].replace(
+            "Who narrates this text? Answer in one word.",
+            "Continue the text above from exactly where it stops, in the same style, for about 60 words.")
+        t1 = stream(a.base, greedy(dict(p1, messages=msgs), max_tokens=96, **nothink))
+        if ok(t1, "cache turn 1"):
+            msgs2 = msgs + [{"role": "assistant", "content": t1["text"]},
+                            {"role": "user", "content": "Now name the two people or things the passage above talks about most."}]
+            p2 = dict(p1, messages=msgs2)
+            ref2 = stream(a.base, greedy(p2, max_tokens=96, prefix_cache=False, **nothink))
+            hit = stream(a.base, greedy(p2, max_tokens=96, **nothink))
+            ser = stream(a.base, greedy(p2, max_tokens=96, draft=False, **nothink))
+            if ok(ref2, "cache turn 2 uncached") and ok(hit, "cache turn 2 cached") and ok(ser, "cache turn 2 cached serial"):
+                if hit["ids"] != ref2["ids"]:
+                    fail("cache: the cached reply differs from the uncached one")
+                if ser["ids"] != ref2["ids"]:
+                    fail("cache: the cached serial reply differs from the uncached one")
+                cached = (hit["usage"].get("prompt_tokens_details") or {}).get("cached_tokens", 0)
+                m["cache_hit_tokens"] = cached
+                m["cache_prompt_tokens"] = hit["usage"]["prompt_tokens"]
+                m["ttft_cached_ms"] = hit["ttft_s"] * 1000
+                m["ttft_uncached_ms"] = ref2["ttft_s"] * 1000
+                if cache_on and cached == 0:
+                    fail("cache: the server advertises a prefix cache but the follow-up turn found nothing in it")
 
     if "ttft" in phases:
         r = stream(a.base, greedy(prompts[3], max_tokens=8))
