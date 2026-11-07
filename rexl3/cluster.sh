@@ -201,4 +201,4 @@ case $CMD in
       on "$h" "grep -E 'event=(boot|glm_load|tp_rank_loaded|tp_group_ready|tp_follower_ready|kv_plan|mtp_vocab)' $REMOTE/logs/rank$r.log | cut -c1-400"; done ;;
   logs) for r in 0 1; do h=$R0; [[ $r == 1 ]] && h=$R1; echo "== rank $r"; on "$h" "tail -${N:-40} $REMOTE/logs/rank$r.log"; done ;;
   *) echo "unknown command $CMD" >&2; exit 2 ;;
-esac
+esac; exit   # on the esac line: bash never reads past it, so replacing this file under a running command is harmless

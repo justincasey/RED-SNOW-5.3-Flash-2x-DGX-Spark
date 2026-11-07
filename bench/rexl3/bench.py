@@ -124,7 +124,12 @@ def main():
     prompts = json.load(open(os.path.join(HERE, "..", "sweep6_prompts.json")))["prompts"]
     longs = json.load(open(os.path.join(HERE, "..", "native", "prefill_prompts.json")))["prompts"]
     chats = [p for p in prompts if p["name"] != "long_doc"]
-    ref = json.load(open(a.ref)) if a.ref and os.path.exists(a.ref) else None
+    ref = None
+    if a.ref:  # a named reference that is missing is a failed gate, never a skipped one
+        if os.path.exists(a.ref):
+            ref = json.load(open(a.ref))
+        else:
+            fail(f"reference {a.ref} does not exist")
     rec = {"base": a.base, "started": time.strftime("%Y-%m-%dT%H:%M:%S")}
     m = {}
     pinned_ids = {}  # the long prompts' and the needle's replies: the prefill path's numerics, pinned like the serial ids
@@ -293,13 +298,19 @@ def main():
             m["trace_mean_s"] = sum(lat) / len(lat)
             m["trace_chat_ttft_max_s"] = max(chat_ttft)
 
-    if ref:
+    if ref:  # ref_checked counts the replies actually compared, so a gate that silently compared nothing shows as 0
+        checked = 0
         for name, sha in ref.get("serial", {}).items():
-            if name in serial and serial[name] != sha:
-                fail(f"{name}: serial reply {serial[name]} differs from the pinned reference {sha}")
+            if name in serial:
+                checked += 1
+                if serial[name] != sha:
+                    fail(f"{name}: serial reply {serial[name]} differs from the pinned reference {sha}")
         for name, sha in ref.get("prompt_replies", {}).items():
-            if name in pinned_ids and pinned_ids[name] != sha:
-                fail(f"{name}: reply {pinned_ids[name]} differs from the pinned reference {sha}")
+            if name in pinned_ids:
+                checked += 1
+                if pinned_ids[name] != sha:
+                    fail(f"{name}: reply {pinned_ids[name]} differs from the pinned reference {sha}")
+        m["ref_checked"] = checked
     if a.pin:
         json.dump({"pinned": rec["started"], "fingerprint": rec.get("fingerprint"), "serial": serial,
                    "prompt_replies": pinned_ids}, open(a.pin, "w"), indent=1)
