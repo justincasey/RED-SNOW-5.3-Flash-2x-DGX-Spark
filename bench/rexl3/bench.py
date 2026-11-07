@@ -3,7 +3,7 @@
 
 Phases, in order, on a freshly started server (empty prefix cache):
   warm     one drafted and one serial 64-token reply (kernels, first graphs)
-  prefill  pinned 8K and 32K Moby-Dick slices (../native/prefill_prompts.json), cold, 64 tokens out (pinned):
+  prefill  pinned 8K and 32K Moby-Dick slices (../native/prefill_prompts.json), cold, the passage continued (thinking off, 128 tokens, pinned):
            tok/s = prompt tokens / client time to the first streamed token
   needle   a code buried mid-way through ~6K tokens must come back
   ttft     a ~220-token chat prompt, client time to the first streamed token
@@ -135,7 +135,15 @@ def main():
 
     if "prefill" in phases:
         for p in longs:
-            r = stream(a.base, greedy(p, max_tokens=64))  # 64 tokens: a reply long enough to fingerprint the prompt's state
+            # the files' question ("Who narrates this text?") has the same one-word answer for every slice, so the timed
+            # request asks for the passage's continuation instead (thinking off, 128 tokens): a reply that depends on the
+            # whole prompt's state, pinned as the prefill path's fingerprint
+            msgs = [dict(x) for x in p["messages"]]
+            msgs[-1]["content"] = msgs[-1]["content"].replace(
+                "Who narrates this text? Answer in one word.",
+                "Continue the text above from exactly where it stops, in the same style, for about 100 words.")
+            r = stream(a.base, greedy(dict(p, messages=msgs), max_tokens=128,
+                                      chat_template_kwargs={"enable_thinking": False}))
             if not ok(r, p["name"]):
                 continue
             n = r["usage"]["prompt_tokens"]
