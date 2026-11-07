@@ -141,15 +141,19 @@ case $CMD in
     if ! git -C "$REXL3_SRC" diff --quiet HEAD; then c+=-d$(git -C "$REXL3_SRC" diff HEAD | shasum | cut -c1-6); fi
     on "$R0" "echo $c > $WORK/src/.rexl3_commit"
     log "synced $c ($OWNER)" ;;
-  build) # once, on rank 0: the ranks compare their executables, so rank 1 runs the same bytes
+  build) # once, on rank 0: the ranks compare their executables, so rank 1 runs the same bytes. A build eats rank 0's
+    # memory (cargo + nvcc), which would shrink another owner's boot plan, so it takes the pair's lock like a server does
+    pre=$(holder); lock || exit 3
+    unlock_new() { [[ $pre == "$OWNER" ]] || on "$R0" "rm -rf $REMOTE/run/lock"; }
     on "$R0" "cd $WORK/src && export PATH=/usr/local/cuda/bin:\$HOME/.cargo/bin:\$PATH CUDA_HOME=/usr/local/cuda \
         REXL3_CUDA_ARCH=sm_121 REXL3_COMMIT=\$(cat .rexl3_commit) CARGO_TARGET_DIR=$WORK/target &&
       cargo +1.89.0 build --release --locked -p gb-server --bin rexl3-serve > $WORK/build.log 2>&1 ||
       { grep -E '^(error|warning: unused)' -A6 $WORK/build.log | head -60; tail -5 $WORK/build.log; exit 1; }
-      mkdir -p $WORK/bin && cp $WORK/target/release/rexl3-serve $BIN.new && mv -f $BIN.new $BIN" || { log "build failed"; exit 1; }
+      mkdir -p $WORK/bin && cp $WORK/target/release/rexl3-serve $BIN.new && mv -f $BIN.new $BIN" || { log "build failed"; unlock_new; exit 1; }
     on "$R0" "cat $BIN" | on "$R1" "mkdir -p $WORK/bin && cat > $BIN.new && chmod +x $BIN.new && mv -f $BIN.new $BIN" \
-      || { log "copy to $R1 failed"; exit 1; }
+      || { log "copy to $R1 failed"; unlock_new; exit 1; }
     a=$(on "$R0" "sha256sum $BIN | cut -c1-12") b=$(on "$R1" "sha256sum $BIN | cut -c1-12")
+    unlock_new
     [[ $a == "$b" ]] || { log "rank 1's binary differs ($b vs $a)"; exit 1; }
     log "built $(on "$R0" "cat $WORK/src/.rexl3_commit") on $R0, copied to $R1: $a ($OWNER)" ;;
   start)
