@@ -20,7 +20,8 @@ case $PAIR in A) R0=dgx-head HOST=192.168.1.121 ;; B) R0=dgx-worker-2 HOST=192.1
 # (a stale REXL3_GLM_PREFILL_CONTRACT once overrode the file), then apply the candidate's file if one is named
 while IFS='=' read -r k _; do [[ $k =~ ^[A-Z][A-Z0-9_]*$ ]] && unset "$k"; done < <(grep -vE '^(#|$)' rexl3/engine.env)
 for k in $(env | sed -n 's/^\(REXL3_[A-Z0-9_]*\|NCCL_[A-Z0-9_]*\)=.*/\1/p'); do unset "$k"; done
-unset OWNER COLD NSYS_ARGS
+unset COLD NSYS_ARGS
+export OWNER=bench   # its own lock owner and build lane: a manual session (OWNER main) is never taken over by a run
 cand_env=""
 if [[ -n ${CANDIDATE_ENV:-} ]]; then
   set -a; source "$CANDIDATE_ENV"; set +a
