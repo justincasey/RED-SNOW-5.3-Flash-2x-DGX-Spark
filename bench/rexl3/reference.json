@@ -1,19 +1,20 @@
 {
- "pinned": "2026-11-07T08:46:48",
- "fingerprint": "fp_478d7da508e5_70d5fb63_cb1311_pfp2r512a1_glmpfp1",
+ "pinned": "2026-11-07T11:40:09",
+ "fingerprint": "fp_facec7f3abce_46278348_cb1311_glmkv8",
  "serial": {
-  "code": "bd8770601dcb4259",
-  "prose": "54f8cfbe2ca67202",
-  "math": "bb9047c1f13a6434",
-  "chat_explain": "e5617d25d6bd970d",
-  "chat_multiturn": "c64f4de9dbece805",
-  "long_doc": "20e664bb9e136085"
+  "code": "d53113a6ebaca109",
+  "prose": "a398cc6181c4dd37",
+  "math": "075c4fd21c5d7c99",
+  "chat_explain": "18c9da912f333b60",
+  "chat_multiturn": "ea14919f4d463dfa",
+  "long_doc": "803b6ce3094629fb"
  },
  "prompt_replies": {
   "prefill_8k": "91b2b2d5f369e140",
-  "prefill_32k": "26b2ff37750209cf",
+  "prefill_32k": "360b059b0d30f80c",
   "needle": "e6331521da7be087"
  },
- "contract": "The unmodified engine: REXL3 v0.1.0 source 478d7da, GLM P1 prefill (prompt rows computed exactly as decode computes them, chunk-grid independent), fp16 latent KV, thinking via template. Every recipe change must reproduce these bytes.",
- "quality": "GSM8K first 400, non-thinking greedy: 385/400 (items 0-79 78/80, 80-399 307/320); needles 8K/32K x3 depths + 186K pass"
+ "contract": "Contract B (user, 2026-11-07): REXL3 redsnow facec7f, GLM P2 prefill at --prefill-chunk 4096 (sequence-parallel residual), fp8 E4M3 latent KV with an fp32 row scale, TensorFold-style expert width split, P1 decode/verify, DFlash2 drafter, thinking via template. Correctness: deterministic, drafted == serial, concurrent == solo, solo == serial prefix, cached == uncached, and these replies.",
+ "quality": "Same build facec7f, P1/fp16 vs contract B: GSM8K first 400 (non-thinking, greedy) 385 vs 381, discordant 7 vs 3, exact two-sided p = 0.34 (no difference beyond noise); needles 8K/32K x 10/50/90% + 186K pass on both; 884,962-token needle passes on contract B (P1/fp16's 866K-956K pool cannot hold it).",
+ "previous": "bench/rexl3/reference-p1-478d7da.json"
 }
