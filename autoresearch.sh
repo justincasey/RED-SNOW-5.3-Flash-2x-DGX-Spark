@@ -1,28 +1,32 @@
 #!/usr/bin/env bash
-# The benchmark for RED-SNOW-5.3-Flash on native TensorFold ($TF_SRC, a checkout of redsnow-native-1.1.9): sync and
-# build the engine on one pair of Sparks, boot both ranks fresh (empty prompt cache), run bench/native/run.py's fixed
-# workload, then bench/native/conc.py's concurrency workload (C sweep, mixed load, fixed open-loop trace), stop.
-# Prints METRIC lines: trace_mean_s (primary since segment 2: mean submit-to-last-token seconds over the trace's 7
-# requests), the C sweep, stall under a long fill, prefill, decode, TTFT, boot.
-# Exits non-zero on a failed build/boot, an errored reply, a drafted reply that differs from "draft": false, or a
-# concurrent reply that differs from its solo one.
+# The benchmark for RED-SNOW-5.3-Flash on REXL3 ($REXL3_SRC, a checkout of justincasey/REXL3 branch redsnow): sync and
+# build the engine on pair A (dgx-head rank 0 + dgx-worker rank 1), boot both ranks cold (page caches dropped) with
+# rexl3/engine.env, run bench/rexl3/bench.py's fixed workload, stop.
+#
+# Primary metric target_score (higher is better; 1.0 = every target met):
+#   (decode_prose_tok_s/70 * prefill_32k_tok_s/3000 * min(1, kv_tokens/2^20) * min(1, 100/boot_s)) ^ (1/4)
+# It prints 0 when any gate fails; target_score_raw keeps the number. Secondary: every raw metric of bench.py, boot_s,
+# kv_tokens. Gates: no errored reply, drafted == serial (token ids), concurrent == solo, the needle, cold prompts not
+# cached, and serial ids equal to bench/rexl3/reference.json (the pinned numerics contract).
+# Exits non-zero on a failed sync/build/boot or any failed gate.
 set -euo pipefail
 cd "$(dirname "$0")"
 
 PAIR=${PAIR:-A}
-case $PAIR in A) HOST=192.168.1.123 ;; B) HOST=192.168.1.121 ;; *) echo "PAIR A or B" >&2; exit 2 ;; esac
-export PORT=${PORT:-8080} CONTEXT=${CONTEXT:-65536} PARALLEL=${PARALLEL:-8} TENSORFOLD_MEMORY_RESERVE_GIB=${TENSORFOLD_MEMORY_RESERVE_GIB:-6}
-export TF_SRC=${TF_SRC:-$HOME/projects/redsnow-port/tf-native-119}
-echo "ASI engine=$(git -C "$TF_SRC" rev-parse --short HEAD)$(git -C "$TF_SRC" diff --quiet || echo +dirty) env=$(env | grep -E '^(TF_KV_PAGES|TF_GLM_[A-Z0-9_]+)=' | sort | tr '\n' ' ')"
-OUT=.work/native-runs/$(date +%Y%m%d-%H%M%S)-$PAIR
+case $PAIR in A) R0=dgx-head HOST=192.168.1.121 ;; B) R0=dgx-worker-2 HOST=192.168.1.123 ;; *) echo "PAIR A or B" >&2; exit 2 ;; esac
+export REXL3_SRC=${REXL3_SRC:-$HOME/projects/REXL3}
+echo "ASI engine=$(git -C "$REXL3_SRC" rev-parse --short=12 HEAD)$(git -C "$REXL3_SRC" diff --quiet HEAD || echo +dirty) env=$(grep -vE '^(#|$)' rexl3/engine.env | tr '\n' ' ')"
+OUT=.work/rexl3-runs/$(date +%Y%m%d-%H%M%S)-$PAIR
 mkdir -p "$OUT"
 
-native/cluster.sh -p "$PAIR" sync >&2
-native/cluster.sh -p "$PAIR" build >&2
-trap 'N=200 native/cluster.sh -p "$PAIR" logs > "$OUT/ranks.log" 2>&1 || true; native/cluster.sh -p "$PAIR" stop >&2 || true' EXIT
-boot=$(native/cluster.sh -p "$PAIR" start | sed -n 's/^boot_s=//p')
+rexl3/cluster.sh -p "$PAIR" sync >&2
+rexl3/cluster.sh -p "$PAIR" build >&2
+trap 'N=300 rexl3/cluster.sh -p "$PAIR" logs > "$OUT/ranks.log" 2>&1 || true; rexl3/cluster.sh -p "$PAIR" stop >&2 || true' EXIT
+boot=$(COLD=1 rexl3/cluster.sh -p "$PAIR" start | sed -n 's/^boot_s=//p')
 [[ -n $boot ]] || { echo "boot failed" >&2; exit 1; }
+rexl3/cluster.sh -p "$PAIR" boot > "$OUT/boot.log" 2>&1 || true
+kv=$(sed -n 's/.*event=kv_plan .*kv_tokens=\([0-9]*\).*/\1/p' "$OUT/boot.log" | head -1)
+[[ -n $kv ]] || { echo "no kv_plan line in rank 0's log" >&2; exit 1; }
 
-python3 bench/native/run.py --base "http://$HOST:$PORT" --out "$OUT/run.json" | tee "$OUT/metrics.txt"
-python3 bench/native/conc.py --base "http://$HOST:$PORT" --out "$OUT/conc.json" | tee -a "$OUT/metrics.txt"
-echo "METRIC boot_s=$boot"
+python3 bench/rexl3/bench.py --base "http://$HOST:8080" --boot-s "$boot" --kv-tokens "$kv" \
+  --ref bench/rexl3/reference.json --out "$OUT/bench.json" | tee "$OUT/metrics.txt"
