@@ -14,7 +14,12 @@ cd "$(dirname "$0")"
 
 PAIR=${PAIR:-A}
 case $PAIR in A) R0=dgx-head HOST=192.168.1.121 ;; B) R0=dgx-worker-2 HOST=192.168.1.123 ;; *) echo "PAIR A or B" >&2; exit 2 ;; esac
-export REXL3_SRC=${REXL3_SRC:-$HOME/projects/REXL3}
+# rexl3/engine.env is the only source of engine settings: drop every engine variable a caller's shell may still carry
+# (a stale REXL3_GLM_PREFILL_CONTRACT once overrode the file), and run the main lane on ~/projects/REXL3
+while IFS='=' read -r k _; do [[ $k =~ ^[A-Z][A-Z0-9_]*$ ]] && unset "$k"; done < <(grep -vE '^(#|$)' rexl3/engine.env)
+for k in $(env | sed -n 's/^\(REXL3_[A-Z0-9_]*\|NCCL_[A-Z0-9_]*\)=.*/\1/p'); do unset "$k"; done
+unset OWNER COLD NSYS_ARGS
+export REXL3_SRC=$HOME/projects/REXL3
 echo "ASI engine=$(git -C "$REXL3_SRC" rev-parse --short=12 HEAD)$(git -C "$REXL3_SRC" diff --quiet HEAD || echo +dirty) env=$(grep -vE '^(#|$)' rexl3/engine.env | tr '\n' ' ')"
 OUT=.work/rexl3-runs/$(date +%Y%m%d-%H%M%S)-$PAIR
 mkdir -p "$OUT"
