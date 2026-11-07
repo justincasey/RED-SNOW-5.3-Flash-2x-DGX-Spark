@@ -16,8 +16,8 @@ Phases, in order, on a freshly started server (empty prefix cache):
 (the GLM family serves no prompt_logprobs, so quality is held by exactness: serial ids against a pinned reference)
 
 Gates (each failure prints FAIL and voids target_score): errors, drafted != serial, concurrent != solo, a missed needle,
-a warm prompt reported as cached, and, when --ref names a pinned reference (--pin writes one), serial ids
-that differ from it.
+a warm prompt reported as cached, and, when --ref names a pinned reference (--pin writes one), serial ids or the long
+prompts' and the needle's replies that differ from it (byte-exact: no output may drift from the reference engine).
 
 target_score = (decode_prose/70 * prefill_32k/3000 * min(1, kv_tokens/2^20) * min(1, 100/boot_s)) ^ (1/4)
 """
@@ -127,6 +127,7 @@ def main():
     ref = json.load(open(a.ref)) if a.ref and os.path.exists(a.ref) else None
     rec = {"base": a.base, "started": time.strftime("%Y-%m-%dT%H:%M:%S")}
     m = {}
+    pinned_ids = {}  # the long prompts' and the needle's replies: the prefill path's numerics, pinned like the serial ids
 
     if "warm" in phases:
         for d in (True, False):
@@ -145,6 +146,7 @@ def main():
             m[f"prefill_{key}_tok_s"] = n / r["ttft_s"]
             m[f"ttft_{key}_s"] = r["ttft_s"]
             rec[p["name"]] = {"prompt_tokens": n, "ttft_s": r["ttft_s"]}
+            pinned_ids[p["name"]] = r["sha"]
 
     if "needle" in phases:
         book = longs[0]["messages"][0]["content"]
@@ -164,6 +166,7 @@ def main():
         if code not in reply:
             fail(f"needle: {code!r} not in {reply!r}")
         rec["needle"] = reply
+        pinned_ids["needle"] = hashlib.sha256(reply.encode()).hexdigest()[:16]
 
     if "ttft" in phases:
         r = stream(a.base, greedy(prompts[3], max_tokens=8))
@@ -284,8 +287,12 @@ def main():
         for name, sha in ref.get("serial", {}).items():
             if name in serial and serial[name] != sha:
                 fail(f"{name}: serial reply {serial[name]} differs from the pinned reference {sha}")
+        for name, sha in ref.get("prompt_replies", {}).items():
+            if name in pinned_ids and pinned_ids[name] != sha:
+                fail(f"{name}: reply {pinned_ids[name]} differs from the pinned reference {sha}")
     if a.pin:
-        json.dump({"pinned": rec["started"], "fingerprint": rec.get("fingerprint"), "serial": serial}, open(a.pin, "w"), indent=1)
+        json.dump({"pinned": rec["started"], "fingerprint": rec.get("fingerprint"), "serial": serial,
+                   "prompt_replies": pinned_ids}, open(a.pin, "w"), indent=1)
 
     if a.boot_s:
         m["boot_s"] = a.boot_s
