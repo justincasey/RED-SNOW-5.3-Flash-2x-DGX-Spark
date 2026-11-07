@@ -33,7 +33,8 @@ main() {
     cand_env=$(grep -vE '^(#|$)' "$CANDIDATE_ENV" | tr '\n' ' ')
   fi
   export REXL3_SRC=${CANDIDATE_SRC:-$HOME/projects/REXL3}
-  echo "ASI engine=$(git -C "$REXL3_SRC" rev-parse --short=12 HEAD)$(git -C "$REXL3_SRC" diff --quiet HEAD || echo +dirty) pair=$PAIR env=$(grep -vE '^(#|$)' rexl3/engine.env | tr '\n' ' ') candidate_env=$cand_env"
+  local ref=${REFERENCE:-bench/rexl3/reference.json}   # the pin the replies are gated against (an older contract's, to finish a comparison)
+  echo "ASI engine=$(git -C "$REXL3_SRC" rev-parse --short=12 HEAD)$(git -C "$REXL3_SRC" diff --quiet HEAD || echo +dirty) pair=$PAIR ref=$ref env=$(grep -vE '^(#|$)' rexl3/engine.env | tr '\n' ' ') candidate_env=$cand_env"
   OUT=.work/rexl3-runs/$(date +%Y%m%d-%H%M%S)-$PAIR
   mkdir -p "$OUT"
 
@@ -52,7 +53,7 @@ main() {
   [[ -n $kv ]] || { echo "no kv_plan line in rank 0's log" >&2; exit 1; }
 
   python3 bench/rexl3/bench.py --base "http://$HOST:8080" --boot-s "$boot" --kv-tokens "$kv" \
-    --ref bench/rexl3/reference.json --out "$OUT/bench.json" | tee "$OUT/metrics.txt"
+    --ref "$ref" --out "$OUT/bench.json" | tee "$OUT/metrics.txt"
 }
 
 main "$@"; exit

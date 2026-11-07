@@ -1,0 +1,19 @@
+{
+ "pinned": "2026-11-07T08:46:48",
+ "fingerprint": "fp_478d7da508e5_70d5fb63_cb1311_pfp2r512a1_glmpfp1",
+ "serial": {
+  "code": "bd8770601dcb4259",
+  "prose": "54f8cfbe2ca67202",
+  "math": "bb9047c1f13a6434",
+  "chat_explain": "e5617d25d6bd970d",
+  "chat_multiturn": "c64f4de9dbece805",
+  "long_doc": "20e664bb9e136085"
+ },
+ "prompt_replies": {
+  "prefill_8k": "91b2b2d5f369e140",
+  "prefill_32k": "26b2ff37750209cf",
+  "needle": "e6331521da7be087"
+ },
+ "contract": "The unmodified engine: REXL3 v0.1.0 source 478d7da, GLM P1 prefill (prompt rows computed exactly as decode computes them, chunk-grid independent), fp16 latent KV, thinking via template. Every recipe change must reproduce these bytes.",
+ "quality": "GSM8K first 400, non-thinking greedy: 385/400 (items 0-79 78/80, 80-399 307/320); needles 8K/32K x3 depths + 186K pass"
+}
