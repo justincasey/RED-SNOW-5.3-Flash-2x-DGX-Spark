@@ -4,8 +4,10 @@
 #   rexl3/cluster.sh fabric          print the pair's RDMA rails (read-only)
 #   rexl3/cluster.sh sync            rsync an engine checkout ($REXL3_SRC) to rank 0
 #   rexl3/cluster.sh build           cargo build --release on rank 0, copy the binary to rank 1, compare digests
-#   rexl3/cluster.sh start           rank 1 then rank 0; returns once /health/ready answers; prints boot_s=
-#   rexl3/cluster.sh stop | status | logs | boot
+#   rexl3/cluster.sh start           take the pair's lock, rank 1 then rank 0; returns once /health/ready answers; prints boot_s=
+#   rexl3/cluster.sh stop            stop both ranks and release the lock
+#   rexl3/cluster.sh hold | release  take / release the pair's lock without a server (single-node GPU tests)
+#   rexl3/cluster.sh status | logs | boot
 #
 # -p A (dgx-head + dgx-worker) or -p B (dgx-worker-2 + dgx-worker-3) select the lab pairs; without -p the nodes are
 # RANK0 / RANK1 from the environment or the repo's .env. Every REXL3_* and NCCL_* variable in the caller's environment
@@ -57,7 +59,13 @@ PORT=${PORT:-8080}
 TP_PORT=${TP_PORT:-29615}
 SERVED=${SERVED_NAME:-${SERVED:-RED-SNOW-5.3-Flash}}
 READY_S=${READY_S:-1200}
-BIN=$REMOTE/bin/rexl3-serve
+# One server runs on a pair at a time: start takes the pair's lock for OWNER (default main, the benchmark) and stop
+# releases it; another owner's start or stop is refused (FORCE=1 stop overrides). Each owner builds in its own lane
+# ($REMOTE/lanes/OWNER: src, target, bin), so a lane's build never replaces the binary another owner is about to run.
+OWNER=${OWNER:-main}
+[[ $OWNER =~ ^[A-Za-z0-9_-]+$ ]] || { echo "OWNER must be a plain name" >&2; exit 2; }
+WORK=$REMOTE; [[ $OWNER == main ]] || WORK=$REMOTE/lanes/$OWNER
+BIN=$WORK/bin/rexl3-serve
 
 # The pair's rails: every rank-0 RDMA netdev whose /24 a rank-1 netdev shares, in HCA-name order.
 # Prints: R0_IF R0_HCAS R0_IP R1_IF R1_HCAS (comma-joined HCAs; the first netdev carries NCCL's sockets).
@@ -115,27 +123,37 @@ stop_rank() {
 
 alive() { on "$1" "kill -0 \$(cat $REMOTE/run/rank$2.pid 2>/dev/null) 2>/dev/null"; }
 
+lock() { # take the pair's lock for OWNER, or name its holder and fail
+  local held
+  held=$(on "$R0" "mkdir -p $REMOTE/run; if mkdir $REMOTE/run/lock 2>/dev/null; then echo $OWNER > $REMOTE/run/lock/owner;
+    else cat $REMOTE/run/lock/owner 2>/dev/null || echo unknown; fi")
+  [[ -z $held || $held == "$OWNER" ]] || { log "pair held by '$held' (OWNER=$OWNER)"; return 3; }
+}
+holder() { on "$R0" "cat $REMOTE/run/lock/owner 2>/dev/null" || true; }
+
 case $CMD in
   fabric) fabric ;;
   sync)
-    on "$R0" "mkdir -p $REMOTE/src" && rsync -a --delete --exclude target/ --exclude .git/ --exclude __pycache__/ "$REXL3_SRC/" "$R0:$REMOTE/src/" \
+    # by checksum, without source times: a changed file lands with a fresh mtime, so cargo always rebuilds what changed
+    on "$R0" "mkdir -p $WORK/src" && rsync -rlpc --delete --exclude target/ --exclude .git/ --exclude __pycache__/ "$REXL3_SRC/" "$R0:$WORK/src/" \
       || { log "sync failed"; exit 1; }
     c=$(git -C "$REXL3_SRC" rev-parse --short=12 HEAD)
     if ! git -C "$REXL3_SRC" diff --quiet HEAD; then c+=-d$(git -C "$REXL3_SRC" diff HEAD | shasum | cut -c1-6); fi
-    on "$R0" "echo $c > $REMOTE/src/.rexl3_commit"
-    log "synced $c" ;;
+    on "$R0" "echo $c > $WORK/src/.rexl3_commit"
+    log "synced $c ($OWNER)" ;;
   build) # once, on rank 0: the ranks compare their executables, so rank 1 runs the same bytes
-    on "$R0" "cd $REMOTE/src && export PATH=/usr/local/cuda/bin:\$HOME/.cargo/bin:\$PATH CUDA_HOME=/usr/local/cuda \
-        REXL3_CUDA_ARCH=sm_121 REXL3_COMMIT=\$(cat .rexl3_commit) CARGO_TARGET_DIR=$REMOTE/target &&
-      cargo +1.89.0 build --release --locked -p gb-server --bin rexl3-serve > $REMOTE/build.log 2>&1 ||
-      { grep -E '^(error|warning: unused)' -A6 $REMOTE/build.log | head -60; tail -5 $REMOTE/build.log; exit 1; }
-      mkdir -p $REMOTE/bin && cp $REMOTE/target/release/rexl3-serve $BIN.new && mv -f $BIN.new $BIN" || { log "build failed"; exit 1; }
-    on "$R0" "cat $BIN" | on "$R1" "mkdir -p $REMOTE/bin && cat > $BIN.new && chmod +x $BIN.new && mv -f $BIN.new $BIN" \
+    on "$R0" "cd $WORK/src && export PATH=/usr/local/cuda/bin:\$HOME/.cargo/bin:\$PATH CUDA_HOME=/usr/local/cuda \
+        REXL3_CUDA_ARCH=sm_121 REXL3_COMMIT=\$(cat .rexl3_commit) CARGO_TARGET_DIR=$WORK/target &&
+      cargo +1.89.0 build --release --locked -p gb-server --bin rexl3-serve > $WORK/build.log 2>&1 ||
+      { grep -E '^(error|warning: unused)' -A6 $WORK/build.log | head -60; tail -5 $WORK/build.log; exit 1; }
+      mkdir -p $WORK/bin && cp $WORK/target/release/rexl3-serve $BIN.new && mv -f $BIN.new $BIN" || { log "build failed"; exit 1; }
+    on "$R0" "cat $BIN" | on "$R1" "mkdir -p $WORK/bin && cat > $BIN.new && chmod +x $BIN.new && mv -f $BIN.new $BIN" \
       || { log "copy to $R1 failed"; exit 1; }
     a=$(on "$R0" "sha256sum $BIN | cut -c1-12") b=$(on "$R1" "sha256sum $BIN | cut -c1-12")
     [[ $a == "$b" ]] || { log "rank 1's binary differs ($b vs $a)"; exit 1; }
-    log "built $(on "$R0" "cat $REMOTE/src/.rexl3_commit") on $R0, copied to $R1: $a" ;;
+    log "built $(on "$R0" "cat $WORK/src/.rexl3_commit") on $R0, copied to $R1: $a ($OWNER)" ;;
   start)
+    lock || exit 3
     read -r r0_if r0_hca r0_ip r1_if r1_hca < <(fabric)
     log "link: $R0 $r0_if [$r0_hca] $r0_ip <-> $R1 $r1_if [$r1_hca]"
     stop_rank "$R0" 0; stop_rank "$R1" 1
@@ -158,12 +176,21 @@ case $CMD in
       sleep 1
     done
     awk -v a="$t0" -v b="$(date +%s.%N)" 'BEGIN{printf "boot_s=%.1f\n", b - a}' ;;
-  stop) stop_rank "$R0" 0; stop_rank "$R1" 1; log "stopped" ;;
+  stop)
+    h=$(holder)
+    if [[ -n $h && $h != "$OWNER" && ${FORCE:-0} != 1 ]]; then log "pair held by '$h': not stopping (OWNER=$OWNER, FORCE=1 overrides)"; exit 3; fi
+    stop_rank "$R0" 0; stop_rank "$R1" 1; on "$R0" "rm -rf $REMOTE/run/lock"; log "stopped" ;;
+  hold) lock || exit 3; log "held by $OWNER (GPU tests may run; release when done)" ;;   # no server: e.g. single-node tests
+  release)
+    h=$(holder)
+    if [[ -n $h && $h != "$OWNER" && ${FORCE:-0} != 1 ]]; then log "pair held by '$h' (OWNER=$OWNER)"; exit 3; fi
+    on "$R0" "rm -rf $REMOTE/run/lock"; log "released" ;;
   status)
     for r in 0 1; do
       h=$R0; [[ $r == 1 ]] && h=$R1
       alive "$h" $r && echo "rank $r ($h): running" || echo "rank $r ($h): stopped"
     done
+    echo "lock: $(holder)"
     on "$R0" "curl -s -m 2 http://127.0.0.1:$PORT/health" || true; echo ;;
   boot) # the ranks' boot and load phase lines
     for r in 0 1; do h=$R0; [[ $r == 1 ]] && h=$R1; echo "== rank $r"
