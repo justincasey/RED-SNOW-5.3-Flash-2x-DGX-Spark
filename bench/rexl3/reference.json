@@ -1,28 +1,28 @@
 {
- "pinned": "2026-11-07T05:34:50",
- "fingerprint": "fp_85d40f130ccc_ffc9b5df_cb1311_glmkv8",
+ "pinned": "2026-11-07T06:04:44",
+ "fingerprint": "fp_a564324fb9b1_3e66d4ca_cb1311_glmkv8",
  "serial": {
-  "code": "2675018a7cd56a7b",
-  "prose": "b34ddf3fe1daf2cc",
-  "math": "d21f4969df617b78",
-  "chat_explain": "dc7b3f6056c4a371",
-  "chat_multiturn": "239396a9e812b67b",
-  "long_doc": "07d30af1c27a08fd"
+  "code": "d53113a6ebaca109",
+  "prose": "a398cc6181c4dd37",
+  "math": "075c4fd21c5d7c99",
+  "chat_explain": "18c9da912f333b60",
+  "chat_multiturn": "ea14919f4d463dfa",
+  "long_doc": "803b6ce3094629fb"
  },
- "contract": "REXL3 redsnow 85d40f1: GLM P2 prefill (chunk 4096), P1 decode/verify, fp8 E4M3 latent KV with an fp32 scale per token (REXL3_GLM_KV=fp8), fp16 indexer keys, thinking via template",
- "quality": "GSM8K first 400: fp8 384/400, fp16 P2 383/400, fp16 P1 385/400; needles 8K/32K x3 + 186K pass; 994,340-token needle passes (fp8 lane)",
+ "contract": "REXL3 redsnow a564324/8262923: expert width split at TP=2 (P2 prompt rows combined per rank part), P2 prefill (chunk 4096, sequence-parallel residual), P1 decode/verify, fp8 E4M3 latent KV, thinking via template",
+ "quality": "GSM8K first 400: width+fp8 381/400, fp8 384/400, fp16 P2 383/400, fp16 P1 385/400; needles 8K/32K/186K pass; decode path bit-identical to the range split",
  "previous": {
-  "pinned": "2026-11-07T04:33:51",
-  "fingerprint": "fp_bf3404ecb8fa_682e16d2_cb1311",
+  "pinned": "2026-11-07T05:34:50",
+  "fingerprint": "fp_85d40f130ccc_ffc9b5df_cb1311_glmkv8",
   "serial": {
-   "code": "e6d7a90700bbed67",
-   "prose": "ac907e545bb36c65",
-   "math": "8f12f4d79e65936d",
-   "chat_explain": "f49a08f7bcb0a370",
-   "chat_multiturn": "9896f9f13f83f2a4",
-   "long_doc": "377d68eb8a59be8f"
+   "code": "2675018a7cd56a7b",
+   "prose": "b34ddf3fe1daf2cc",
+   "math": "d21f4969df617b78",
+   "chat_explain": "dc7b3f6056c4a371",
+   "chat_multiturn": "239396a9e812b67b",
+   "long_doc": "07d30af1c27a08fd"
   },
-  "contract": "REXL3 redsnow bf3404e: GLM P2 prefill (prefill-chunk 4096; row split; 6-bit + multi-subbank P2 experts), P1 decode/verify, fp16 latent KV, thinking via template",
-  "quality": "GSM8K P1 385/400 vs P2 383/400 (first 400 test items, non-thinking greedy); needles 8K/32K x3 depths + 186K pass on both"
+  "contract": "REXL3 redsnow 85d40f1: GLM P2 prefill (chunk 4096), P1 decode/verify, fp8 E4M3 latent KV with an fp32 scale per token (REXL3_GLM_KV=fp8), fp16 indexer keys, thinking via template",
+  "quality": "GSM8K first 400: fp8 384/400, fp16 P2 383/400, fp16 P1 385/400; needles 8K/32K x3 + 186K pass; 994,340-token needle passes (fp8 lane)"
  }
 }
