@@ -59,11 +59,13 @@ PORT=${PORT:-8080}
 TP_PORT=${TP_PORT:-29615}
 SERVED=${SERVED_NAME:-${SERVED:-RED-SNOW-5.3-Flash}}
 READY_S=${READY_S:-1200}
-# One server runs on a pair at a time: start takes the pair's lock for OWNER (default main, the benchmark) and stop
-# releases it; another owner's start or stop is refused (FORCE=1 stop overrides). Each owner builds in its own lane
+# One server runs on a pair at a time: start takes the pair's lock for LOCK_ID (default OWNER, default main) and stop
+# releases it; another holder's start or stop is refused (FORCE=1 stop overrides). Each OWNER builds in its own lane
 # ($REMOTE/lanes/OWNER: src, target, bin), so a lane's build never replaces the binary another owner is about to run.
+# A caller that may run twice under one OWNER (autoresearch.sh) gives each run its own LOCK_ID.
 OWNER=${OWNER:-main}
-[[ $OWNER =~ ^[A-Za-z0-9_-]+$ ]] || { echo "OWNER must be a plain name" >&2; exit 2; }
+LOCK_ID=${LOCK_ID:-$OWNER}
+[[ $OWNER =~ ^[A-Za-z0-9_-]+$ && $LOCK_ID =~ ^[A-Za-z0-9_.-]+$ ]] || { echo "OWNER and LOCK_ID must be plain names" >&2; exit 2; }
 WORK=$REMOTE; [[ $OWNER == main ]] || WORK=$REMOTE/lanes/$OWNER
 BIN=$WORK/bin/rexl3-serve
 
@@ -123,11 +125,11 @@ stop_rank() {
 
 alive() { on "$1" "kill -0 \$(cat $REMOTE/run/rank$2.pid 2>/dev/null) 2>/dev/null"; }
 
-lock() { # take the pair's lock for OWNER, or name its holder and fail
+lock() { # take the pair's lock for LOCK_ID, or name its holder and fail
   local held
-  held=$(on "$R0" "mkdir -p $REMOTE/run; if mkdir $REMOTE/run/lock 2>/dev/null; then echo $OWNER > $REMOTE/run/lock/owner;
+  held=$(on "$R0" "mkdir -p $REMOTE/run; if mkdir $REMOTE/run/lock 2>/dev/null; then echo $LOCK_ID > $REMOTE/run/lock/owner;
     else cat $REMOTE/run/lock/owner 2>/dev/null || echo unknown; fi")
-  [[ -z $held || $held == "$OWNER" ]] || { log "pair held by '$held' (OWNER=$OWNER)"; return 3; }
+  [[ -z $held || $held == "$LOCK_ID" ]] || { log "pair held by '$held' (LOCK_ID=$LOCK_ID)"; return 3; }
 }
 holder() { on "$R0" "cat $REMOTE/run/lock/owner 2>/dev/null" || true; }
 
@@ -144,7 +146,7 @@ case $CMD in
   build) # once, on rank 0: the ranks compare their executables, so rank 1 runs the same bytes. A build eats rank 0's
     # memory (cargo + nvcc), which would shrink another owner's boot plan, so it takes the pair's lock like a server does
     pre=$(holder); lock || exit 3
-    unlock_new() { [[ $pre == "$OWNER" ]] || on "$R0" "rm -rf $REMOTE/run/lock"; }
+    unlock_new() { [[ $pre == "$LOCK_ID" ]] || on "$R0" "rm -rf $REMOTE/run/lock"; }
     on "$R0" "cd $WORK/src && export PATH=/usr/local/cuda/bin:\$HOME/.cargo/bin:\$PATH CUDA_HOME=/usr/local/cuda \
         REXL3_CUDA_ARCH=sm_121 REXL3_COMMIT=\$(cat .rexl3_commit) CARGO_TARGET_DIR=$WORK/target &&
       cargo +1.89.0 build --release --locked -p gb-server --bin rexl3-serve > $WORK/build.log 2>&1 ||
@@ -182,12 +184,12 @@ case $CMD in
     awk -v a="$t0" -v b="$(date +%s.%N)" 'BEGIN{printf "boot_s=%.1f\n", b - a}' ;;
   stop)
     h=$(holder)
-    if [[ -n $h && $h != "$OWNER" && ${FORCE:-0} != 1 ]]; then log "pair held by '$h': not stopping (OWNER=$OWNER, FORCE=1 overrides)"; exit 3; fi
+    if [[ -n $h && $h != "$LOCK_ID" && ${FORCE:-0} != 1 ]]; then log "pair held by '$h': not stopping (LOCK_ID=$LOCK_ID, FORCE=1 overrides)"; exit 3; fi
     stop_rank "$R0" 0; stop_rank "$R1" 1; on "$R0" "rm -rf $REMOTE/run/lock"; log "stopped" ;;
-  hold) lock || exit 3; log "held by $OWNER (GPU tests may run; release when done)" ;;   # no server: e.g. single-node tests
+  hold) lock || exit 3; log "held by $LOCK_ID (GPU tests may run; release when done)" ;;   # no server: e.g. single-node tests
   release)
     h=$(holder)
-    if [[ -n $h && $h != "$OWNER" && ${FORCE:-0} != 1 ]]; then log "pair held by '$h' (OWNER=$OWNER)"; exit 3; fi
+    if [[ -n $h && $h != "$LOCK_ID" && ${FORCE:-0} != 1 ]]; then log "pair held by '$h' (LOCK_ID=$LOCK_ID)"; exit 3; fi
     on "$R0" "rm -rf $REMOTE/run/lock"; log "released" ;;
   status)
     for r in 0 1; do

@@ -26,13 +26,17 @@ main() {
   while IFS='=' read -r k _; do [[ $k =~ ^[A-Z][A-Z0-9_]*$ ]] && unset "$k"; done < <(grep -vE '^(#|$)' rexl3/engine.env)
   for k in $(compgen -e | grep -E '^(REXL3|NCCL)_' || true); do unset "$k"; done
   unset COLD NSYS_ARGS
-  export OWNER=bench   # its own lock owner and build lane: a manual session (OWNER main) is never taken over by a run
+  unset OWNER LOCK_ID
   local cand_env=""
   if [[ -n ${CANDIDATE_ENV:-} ]]; then
     set -a; source "$CANDIDATE_ENV"; set +a
     cand_env=$(grep -vE '^(#|$)' "$CANDIDATE_ENV" | tr '\n' ' ')
   fi
   export REXL3_SRC=${CANDIDATE_SRC:-$HOME/projects/REXL3}
+  # a build lane per candidate checkout (incremental builds; two candidates never share a binary) and a lock identity
+  # per run (two runs, even of one candidate, never share a pair): a manual session (OWNER main) is never taken over
+  local cand; cand=$(basename "$REXL3_SRC" | tr -c 'A-Za-z0-9_-\n' '_')
+  export OWNER=bench-$cand LOCK_ID=bench-$cand-$$
   local ref=${REFERENCE:-bench/rexl3/reference.json}   # the pin the replies are gated against (an older contract's, to finish a comparison)
   echo "ASI engine=$(git -C "$REXL3_SRC" rev-parse --short=12 HEAD)$(git -C "$REXL3_SRC" diff --quiet HEAD || echo +dirty) pair=$PAIR ref=$ref env=$(grep -vE '^(#|$)' rexl3/engine.env | tr '\n' ' ') candidate_env=$cand_env"
   OUT=.work/rexl3-runs/$(date +%Y%m%d-%H%M%S)-$PAIR
