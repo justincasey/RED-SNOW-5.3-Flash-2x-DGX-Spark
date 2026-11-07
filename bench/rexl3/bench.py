@@ -11,7 +11,8 @@ Phases, in order, on a freshly started server (empty prefix cache):
   ttft     a ~220-token chat prompt, client time to the first streamed token
   decode   ../sweep6_prompts.json, greedy, 512 tokens, drafted and "draft": false, thinking per the server default;
            tok/s = (tokens - 1) / (last chunk - first chunk); the two replies' token ids must be equal
-  conc     each chat alone (256 tokens), then C = 1, 2, 4, 8 at once: aggregate tok/s, worst TTFT; every concurrent
+  conc     each chat alone (256 tokens), then C = 1, 2, 4, 8 at once: aggregate tok/s, worst TTFT, mean stream rate,
+           efficiency (aggregate / the aggregate if no stream slowed another); every concurrent
            reply's token ids must equal its solo reply's
   mixed    4 chats decoding, a cold ~32K prompt arrives, then a short chat: stall_ms, ttft_long_s, ttft_under_load_ms
   trace    a fixed open-loop arrival schedule (5 chats, cold 32K and 8K prompts): trace_mean_s
@@ -255,12 +256,12 @@ def main():
             if tprs:
                 m["tokens_per_round"] = sum(tprs) / len(tprs)
 
-    solo = {}
+    solo, solo_wall = {}, {}
     if phases & {"conc", "mixed", "trace"}:
         for p in chats:  # each chat alone: the reference for concurrent == solo, and itself the serial reply's first tokens
             r = stream(a.base, greedy(p, max_tokens=256))
             if ok(r, f"solo {p['name']}"):
-                solo[p["name"]] = r["ids"]
+                solo[p["name"]], solo_wall[p["name"]] = r["ids"], r["end"] - r["t0"]
                 if p["name"] in serial_ids and r["ids"] != serial_ids[p["name"]][:len(r["ids"])]:
                     fail(f"solo {p['name']}: reply differs from the serial reply's first {len(r['ids'])} tokens")
 
@@ -285,6 +286,12 @@ def main():
             agg1 = agg1 or agg
             m[f"sweep_c{c}_tok_s"] = agg
             m[f"sweep_c{c}_ttft_max_ms"] = max(o["ttft_s"] for o in outs) * 1000
+            # scaling: the streams' mean decode rate, and the aggregate against perfect batching (every stream as fast
+            # as alone, so the wall is the slowest solo reply's): 1.0 means the streams do not slow each other at all
+            m[f"sweep_c{c}_stream_tok_s"] = sum(o["decode_tok_s"] for o in outs) / c
+            if all(p["name"] in solo_wall for p in ps):
+                ideal = sum(len(o["ids"]) for o in outs) / max(solo_wall[p["name"]] for p in ps)
+                m[f"sweep_c{c}_efficiency"] = agg / ideal
             rec[f"c{c}"] = {"wall": wall, "ttft": [o["ttft_s"] for o in outs], "per_stream_tok_s": [o["decode_tok_s"] for o in outs]}
         if agg1 and "sweep_c8_tok_s" in m:
             m["scale_c8"] = m["sweep_c8_tok_s"] / agg1
