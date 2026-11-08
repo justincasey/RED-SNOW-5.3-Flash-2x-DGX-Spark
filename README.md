@@ -247,7 +247,7 @@ What the fork adds to REXL3 v0.1.0 for this pack:
 **Correctness.** Replies are deterministic; a drafted reply equals the `"draft": false` one, a concurrent reply its solo
 one, and a reply from the prompt cache the `"prefix_cache": false` one, token for token. Prompt rows are computed with
 REXL3's P2 arithmetic and the KV cache is fp8, so replies are not bit-identical to an fp16 engine's. Measured against
-REXL3's exact P1/fp16 path on the same build: GSM8K (all 1,319 test problems, greedy, non-thinking) 1,248 vs 1,256
+REXL3's exact P1/fp16 path, both run on one build: GSM8K (all 1,319 test problems, greedy, non-thinking) 1,248 vs 1,256
 correct, 13 vs 21 problems right in only one of the two (exact two-sided p = 0.23, no difference beyond noise); every
 needle passes at 8K, 32K and 186K on both, and a needle at 1,027,057 tokens passes on this configuration
 (`bench/rexl3/quality.sh`, `bench/rexl3/needle_long.py`, `bench/rexl3/gsm8k_compare.py`).
