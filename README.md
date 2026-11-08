@@ -270,9 +270,8 @@ needle passes at 8K, 32K and 186K on both, and a needle at 1,027,057 tokens pass
 
 REXL3 column: one full run of the tagged build (`redsnow-rexl3-v1.0.0`); between runs of one build prefill varies by
 1-2%, decode by about 1 tok/s, the trace by about 0.5 s and C8 by up to 7 tok/s, so the unbolded REXL3 values are level
-with the native engine's, not ahead. Rank 0 keeps at least 5.2 GiB `MemAvailable` through the whole benchmark and
-through a 1.03M-token prompt.
-
+with the native engine's, not ahead. On the tagged build both ranks keep at least 5.2 GiB `MemAvailable` through the
+whole benchmark and through a 1.03M-token prompt.
 For long prompts, `PREFILL_CHUNK=7168` and `KV_TOKENS=1048576` in `.env` fill 4-6% faster (1,680 / 1,759 tok/s against
 1,585 / 1,691 at 4,096 rows, same build and pair) at a cost to everything else: the open-loop trace takes 27.2 s
 instead of 25.3 s, the pool holds 1,048,576 tokens, and rank 0's least `MemAvailable` drops to 4.3 GiB.
