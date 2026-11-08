@@ -68,7 +68,7 @@ fi
 ZIG_URL="${ZIG_URL:-https://ziglang.org/download/0.17.0/zig-aarch64-linux-0.17.0.tar.xz}"
 REXL3_REPO="${REXL3_REPO:-https://github.com/justincasey/REXL3.git}"
 REXL3_REF="${REXL3_REF:-redsnow-rexl3-v1.0.0}"
-REXL3_COMMIT="${REXL3_COMMIT:-}"                         # set with the tag: install refuses any other commit
+REXL3_COMMIT="${REXL3_COMMIT:-49cbd0461a71b4ae0e2311f94e71659c93a6f7ec}"   # install refuses any other commit
 RUST_TOOLCHAIN="${RUST_TOOLCHAIN:-1.89.0}"
 
 PACK_REPO="${PACK_REPO:-vcruz305/RED-SNOW-5.3-FLASH-EXL3-SAGE-4.91bpw}"
