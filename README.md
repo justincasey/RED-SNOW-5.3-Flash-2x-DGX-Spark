@@ -13,7 +13,7 @@ The engine is [TensorFold](https://github.com/ashhart/TensorFold) 1.1.9's native
 fork: [`justincasey/TensorFold` tag `redsnow-native-v1.1.0`](https://github.com/justincasey/TensorFold/tree/redsnow-native-v1.1.0).
 v1.0.2's Python engine is still one setting away (`ENGINE=python`, [below](#python-engine-v102)), and so is the
 [REXL3](https://github.com/REXL3/REXL3) engine (`ENGINE=rexl3`, [below](#rexl3-engine)): faster decode, a prompt cache
-and a 1M-token window, slower prefill.
+and a 1M-token window, prefill on par.
 
 One script sets it up and runs it:
 
@@ -246,23 +246,27 @@ What the fork adds to REXL3 v0.1.0 for this pack:
 
 **Correctness.** Replies are deterministic; a drafted reply equals the `"draft": false` one, a concurrent reply its solo
 one, and a reply from the prompt cache the `"prefix_cache": false` one, token for token. Prompt rows are computed with
-REXL3's P2 arithmetic and the KV cache is fp8, so replies are not bit-identical to an fp16 engine's. Measured on one
-build against REXL3's exact P1/fp16 path: GSM8K (first 400, greedy) 381 vs 385 correct, 3 vs 7 problems right in only
-one of the two (exact p = 0.34, no difference beyond noise); every needle passes at 8K, 32K and 186K on both, and at
-885K tokens on this configuration (`bench/rexl3/quality.sh`, `bench/rexl3/gsm8k_compare.py`).
+REXL3's P2 arithmetic and the KV cache is fp8, so replies are not bit-identical to an fp16 engine's. Measured against
+REXL3's exact P1/fp16 path on the same build: GSM8K (all 1,319 test problems, greedy, non-thinking) 1,248 vs 1,256
+correct, 13 vs 21 problems right in only one of the two (exact two-sided p = 0.23, no difference beyond noise); every
+needle passes at 8K, 32K and 186K on both, and a needle at 1,027,057 tokens passes on this configuration
+(`bench/rexl3/quality.sh`, `bench/rexl3/needle_long.py`, `bench/rexl3/gsm8k_compare.py`).
 
 | Measurement (2026-11-07, `bench/rexl3/bench.py`, 8 streams, ~1.18M-token KV pool) | REXL3 | Native |
 |---|---|---|
-| Decode with DFlash2, mean of 6 prompts (512 tokens, thinking on) | **47.2 tok/s** (prose 38.2) | 44.8 (35.5) |
-| Decode without drafting | **28.4 tok/s** | 27.8 |
-| Prefill, cold 8K / 32K prompt | 1,328 / 1,451 tok/s | **1,513 / 1,660** |
-| Time to first token, ~220-token chat | 0.52 s | **0.47 s** |
-| Next turn of an 8.9K-token conversation (prompt cache) | **0.45 s** to first token (6.4 s uncached) | no cache across turns |
-| 2 / 4 / 8 chats at once, total decode | **51.6** / 65.1 / 96.8 tok/s | 48.9 / **66.2** / **97.8** |
-| Short chat during a cold 32K fill: time to first token | **0.73 s** | 0.82 s |
-| Open-loop trace, mean submit-to-last-token | 27.3 s | **25.8 s** |
-| Longest window | **1,048,576 tokens** | 274,432 (2 streams) |
+| Decode with DFlash2, mean of 6 prompts (512 tokens, thinking on) | **47.9 tok/s** (prose 38.3) | 44.8 (35.5) |
+| Decode without drafting | **28.6 tok/s** | 27.8 |
+| Prefill, cold 8K / 32K prompt | **1,563 / 1,670 tok/s** | 1,513 / 1,660 |
+| Time to first token, ~220-token chat | **0.45 s** | 0.47 s |
+| Next turn of an 8.9K-token conversation (prompt cache) | **0.38 s** to first token (5.6 s uncached) | no cache across turns |
+| 2 / 4 / 8 chats at once, total decode | **52.9 / 67.2 / 101.6** tok/s | 48.9 / 66.2 / 97.8 |
+| 4 chats decoding while a cold 32K prompt fills: longest gap between their tokens | **0.34 s** | 0.46 s |
+| Short chat during that fill: time to first token | **0.72 s** | 0.82 s |
+| Open-loop trace, mean submit-to-last-token | **25.2 s** | 25.8 s |
+| Longest window | **1,048,576 tokens** (needle at 1.03M tokens: 12.3 min) | 274,432 (2 streams) |
 | Ready after `start` | **~40 s** | ~100 s |
+
+Rank 0 keeps at least 5.2 GiB `MemAvailable` through the whole benchmark and through a 1.03M-token prompt.
 
 Limits of `ENGINE=rexl3`:
 
