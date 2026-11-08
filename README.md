@@ -238,7 +238,8 @@ What the fork adds to REXL3 v0.1.0 for this pack:
 - **DFlash2 for GLM**: the drafter's linears quantized to 4 bits at load, taps after layers 5/14/24/33/42, its round split
   across both ranks, its context window kept with prompt-cache snapshots. The pack's NextN layer is not loaded.
 - **Prefill for the 4.91 bpw pack**: REXL3's P2 prompt arithmetic with 6-bit and mixed-width experts, rows split between
-  the ranks, the last layer's tail on the head rows only, 4,096-row chunks.
+  the ranks, the last layer's tail on the head rows only, 4,096-row chunks (up to 8,192 accepted), the prompt cache's
+  snapshot taken inside the last chunk.
 - **TensorFold's expert split**: each rank holds half of every routed expert's width, so both ranks read the same bytes.
 - **fp8 latent KV** (E4M3 with an fp32 scale per token) and a **prompt cache** whose pages are idle pages of the KV pool.
 - **Concurrency**: prompts arriving together fill in one forward, a long prompt fills in parts between decode rounds.
@@ -254,19 +255,25 @@ needle passes at 8K, 32K and 186K on both, and a needle at 1,027,057 tokens pass
 
 | Measurement (2026-11-07, `bench/rexl3/bench.py`, 8 streams, ~1.18M-token KV pool) | REXL3 | Native |
 |---|---|---|
-| Decode with DFlash2, mean of 6 prompts (512 tokens, thinking on) | **47.9 tok/s** (prose 38.3) | 44.8 (35.5) |
-| Decode without drafting | **28.6 tok/s** | 27.8 |
-| Prefill, cold 8K / 32K prompt | **1,563 / 1,670 tok/s** | 1,513 / 1,660 |
-| Time to first token, ~220-token chat | **0.45 s** | 0.47 s |
-| Next turn of an 8.9K-token conversation (prompt cache) | **0.38 s** to first token (5.6 s uncached) | no cache across turns |
-| 2 / 4 / 8 chats at once, total decode | **52.9 / 67.2 / 101.6** tok/s | 48.9 / 66.2 / 97.8 |
+| Decode with DFlash2, mean of 6 prompts (512 tokens, thinking on) | **47.8 tok/s** (prose 38.1) | 44.8 (35.5) |
+| Decode without drafting | **28.7 tok/s** | 27.8 |
+| Prefill, cold 8K / 32K prompt | **1,614 / 1,685 tok/s** | 1,513 / 1,660 |
+| Time to first token, ~220-token chat | **0.46 s** | 0.47 s |
+| Next turn of an 8.9K-token conversation (prompt cache) | **0.39 s** to first token (5.5 s uncached) | no cache across turns |
+| 2 / 4 / 8 chats at once, total decode | **52.9 / 67.0 / 100.4** tok/s | 48.9 / 66.2 / 97.8 |
 | 4 chats decoding while a cold 32K prompt fills: longest gap between their tokens | **0.34 s** | 0.46 s |
-| Short chat during that fill: time to first token | **0.72 s** | 0.82 s |
-| Open-loop trace, mean submit-to-last-token | **25.2 s** | 25.8 s |
+| Short chat during that fill: time to first token | **0.70 s** | 0.82 s |
+| Open-loop trace, mean submit-to-last-token | **25.4 s** | 25.8 s |
 | Longest window | **1,048,576 tokens** (needle at 1.03M tokens: 12.3 min) | 274,432 (2 streams) |
 | Ready after `start` | **~40 s** | ~100 s |
 
-Rank 0 keeps at least 5.2 GiB `MemAvailable` through the whole benchmark and through a 1.03M-token prompt.
+REXL3 column: one full run of the tagged build (`redsnow-rexl3-v1.0.0`); between runs prefill varies by 1-2% and
+decode by about 1 tok/s. Rank 0 keeps at least 5.2 GiB `MemAvailable` through the whole benchmark and through a
+1.03M-token prompt.
+
+For long prompts, `PREFILL_CHUNK=7168` and `KV_TOKENS=1048576` in `.env` fill 4-6% faster (1,680 / 1,759 tok/s against
+1,585 / 1,691 on the same pair) at a cost to everything else: the open-loop trace takes 27.2 s instead of 25.3 s, the pool
+holds 1,048,576 tokens, and rank 0's least `MemAvailable` drops to 4.3 GiB.
 
 Limits of `ENGINE=rexl3`:
 
