@@ -1,9 +1,9 @@
 #!/usr/bin/env python3
 """One needle near the window's end (stdlib only): needle.py's prompt and code over non-repeated filler long enough for
 ~1M tokens (Project Gutenberg: Moby-Dick #2701, War and Peace #2600, Pride and Prejudice #1342, in bench/rexl3/data/),
-cut to --chars characters (about 3.6 per token; 3,600,000 is ~994K tokens). Greedy, thinking off, 24 tokens.
+cut to --chars characters (about 4.1 per token: 4,200,000 measured 1,027,057 tokens). Greedy, thinking off, 24 tokens.
 
-  needle_long.py --base http://HOST:8080 [--chars 3600000] [--depth 0.5]
+  needle_long.py --base http://HOST:8080 [--chars 4200000] [--depth 0.5]
 
 Prints one line and METRIC needle_long_pass / needle_long_tokens / needle_long_tok_s. Exit 1 on a miss.
 """
@@ -22,7 +22,7 @@ BOOKS = ("moby_dick_pg2701.txt", "pg2600.txt", "pg1342.txt")
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--base", default=os.environ.get("BASE", "http://192.168.1.121:8080"))
-    ap.add_argument("--chars", type=int, default=3_600_000)
+    ap.add_argument("--chars", type=int, default=4_200_000)
     ap.add_argument("--depth", type=float, default=0.5)
     a = ap.parse_args()
     book = "".join(open(os.path.join(HERE, "data", b), encoding="utf-8").read() for b in BOOKS)

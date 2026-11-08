@@ -28,7 +28,9 @@ Best score 0.7460 (run 130); 131 is within noise.
   on pair B but cost the trace (27.2 s) and KV (1,048,576): opt-in only.
 
 ## Displaced deployment
-DeepSeek-V4.1-Flash-1017 TP4 (`spark-ds41f`) was stopped on all four nodes for this work. Restore (plan verified as
-a dry run, not executed): stop REXL3 on both pairs, then
-`ssh dgx-head 'cd ~/projects/spark-ds41f && bin/spark --cluster-config config/cluster.json --shape tp4-switched cluster start --apply'`.
+DeepSeek-V4.1-Flash-1017 TP4 (`spark-ds41f`) was stopped on all four nodes for this work. It had been started from
+`experiments/2026-11-01-site-levers/serving-best.json` (not `config/cluster.json`, whose NCCL/speculation settings
+differ). Restore (plan verified as a dry run, not executed): stop REXL3 on both pairs and free both locks, then
+`ssh dgx-head 'cd ~/projects/spark-ds41f && bin/spark --cluster-config experiments/2026-11-01-site-levers/serving-best.json --shape tp4-switched cluster start --apply'`.
 At hand-over pair A serves the tagged build (lock `main` held by the launcher); pair B is stopped and unlocked.
+Debt: TD-022..TD-026 in `~/recipes/docs/exec-plans/tech-debt-tracker.md`.
