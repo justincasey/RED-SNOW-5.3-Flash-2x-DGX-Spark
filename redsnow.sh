@@ -208,7 +208,7 @@ echo "ok   disk: ${free} GiB free at $MODELS_DIR (models need ~200 GiB; ${have} 
 [[ $free -ge 20 ]] || { echo "FAIL under 20 GiB free at $MODELS_DIR"; exit 1; }
 mem=$(awk "/MemTotal/ {printf \"%d\", \$2/1048576}" /proc/meminfo)
 echo "ok   memory: ${mem} GiB"
-mine=" $(pgrep -d " " -f "tensorfol[d] serve" || true) "
+mine=" $(pgrep -d " " -f "tensorfol[d] serve|rexl3-serv[e]" || true) "
 busy=$(nvidia-smi --query-compute-apps=pid,process_name --format=csv,noheader | while IFS=", " read -r pid name; do
   [[ "$mine" == *" $pid "* ]] || echo "$pid $name"; done)
 [[ -z "$busy" ]] || echo "WARN other GPU processes (the model needs ~100 GiB a node): $busy"
