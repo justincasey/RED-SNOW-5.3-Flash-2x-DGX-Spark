@@ -1,18 +1,20 @@
 #!/usr/bin/env bash
-# RED-SNOW-5.3-Flash (EXL3 SAGE 4.91bpw) on two DGX Sparks joined by one QSFP cable, TensorFold TP=2.
+# RED-SNOW-5.3-Flash (EXL3 SAGE 4.91bpw) on two DGX Sparks joined by one QSFP cable, TP=2.
 # ENGINE=native (default): the Zig TensorFold 1.1.9 engine (justincasey/TensorFold tag redsnow-native-v1.1.0).
+# ENGINE=rexl3: the REXL3 engine (Rust + CUDA), this project's fork justincasey/REXL3 at a pinned tag (rexl3/).
 # ENGINE=python: v1.0.2's Python engine (tag redsnow-v1.0.2), as before.
 #
 # Run from any machine that reaches both Sparks over key-based ssh. Rank 0 serves the OpenAI-compatible API.
 #
 #   ./redsnow.sh setup        preflight + install + download (+ view for python) (first time; idempotent)
 #   ./redsnow.sh preflight    check both nodes: GPU, CUDA, python, disk, the link between them
-#   ./redsnow.sh install      native: engine at the pinned tag, Zig 0.17, NCCL, one build; python: engine + venv + kernels
+#   ./redsnow.sh install      native/rexl3: engine at the pinned tag, its toolchain, NCCL, one build; python: engine + venv + kernels
 #   ./redsnow.sh download     model pack and (DRAFTS=on) the DFlash2 drafter (+ the BF16 head shard for python)
 #   ./redsnow.sh view         python only: build the serve view (pack + BF16 lm_head) on both nodes
 #   ./redsnow.sh start        launch both ranks and wait until the API answers
 #   ./redsnow.sh stop | restart | status | smoke | logs [0|1]
 #   ./redsnow.sh bench [run|conc|all]      native, on rank 0; results under bench/runs/ (default all)
+#   ./redsnow.sh bench                     rexl3: bench/rexl3/bench.py from this machine; results under bench/runs/
 #   ./redsnow.sh bench [smoke|decode|pin|long|sixcat|all]   python
 #
 # Configuration: environment > .env > defaults below. .env.example documents every key.
@@ -46,8 +48,8 @@ log() { printf '%s %s\n' "$(date +%H:%M:%S)" "$*" >&2; }
 die() { log "error: $*"; exit 1; }
 
 # ── defaults ─────────────────────────────────────────────────────────────────
-ENGINE="${ENGINE:-native}"                               # native: Zig TensorFold 1.1.9 (default); python: v1.0.2's engine
-[[ $ENGINE == native || $ENGINE == python ]] || die "ENGINE must be native or python (got: $ENGINE)"
+ENGINE="${ENGINE:-native}"                               # native: Zig TensorFold 1.1.9 (default); rexl3; python: v1.0.2's engine
+[[ $ENGINE == native || $ENGINE == rexl3 || $ENGINE == python ]] || die "ENGINE must be native, rexl3 or python (got: $ENGINE)"
 # what the caller or .env set (native passes only these on; native/engine.env holds the native defaults)
 SET_CONTEXT="${CONTEXT:-}" SET_PARALLEL="${PARALLEL:-}" SET_KV_DTYPE="${KV_DTYPE:-}"
 SET_RESERVE="${MEMORY_RESERVE_GIB:-}" SET_NCHANNELS="${NCCL_MAX_NCHANNELS:-}"
@@ -64,6 +66,10 @@ else
   TF_COMMIT="${TF_COMMIT:-f5d727aec09e3d25aac6435458bd3b467b4cf952}"
 fi
 ZIG_URL="${ZIG_URL:-https://ziglang.org/download/0.17.0/zig-aarch64-linux-0.17.0.tar.xz}"
+REXL3_REPO="${REXL3_REPO:-https://github.com/justincasey/REXL3.git}"
+REXL3_REF="${REXL3_REF:-redsnow-rexl3-v1.0.0}"
+REXL3_COMMIT="${REXL3_COMMIT:-49cbd0461a71b4ae0e2311f94e71659c93a6f7ec}"   # install refuses any other commit
+RUST_TOOLCHAIN="${RUST_TOOLCHAIN:-1.89.0}"
 
 PACK_REPO="${PACK_REPO:-vcruz305/RED-SNOW-5.3-FLASH-EXL3-SAGE-4.91bpw}"
 PACK_REV="${PACK_REV:-f6b8963784254095a54944f2963b2925fcf4b199}"
@@ -129,6 +135,7 @@ resolve_paths() {
   fi
   MODELS_DIR="${MODELS_DIR:-$BASE_DIR/models}"
   SRC_DIR="$BASE_DIR/tensorfold"; VENV="$BASE_DIR/venv"; LOG_DIR="$BASE_DIR/logs"; NATIVE_DIR="$BASE_DIR/native"
+  REXL3_DIR="$BASE_DIR/rexl3"
   EXT_DIR="$BASE_DIR/torch_extensions"
   PACK_DIR="$MODELS_DIR/${PACK_REPO##*/}"; HEAD_DIR="$MODELS_DIR/${HEAD_REPO##*/}"
   DRAFTER_DIR="$MODELS_DIR/${DRAFTER_REPO##*/}"; SERVE_DIR="$MODELS_DIR/redsnow-serve"
@@ -136,7 +143,7 @@ resolve_paths() {
 paths_kv() {
   echo BASE_DIR="$BASE_DIR" MODELS_DIR="$MODELS_DIR" SRC_DIR="$SRC_DIR" VENV="$VENV" LOG_DIR="$LOG_DIR" \
        EXT_DIR="$EXT_DIR" PACK_DIR="$PACK_DIR" HEAD_DIR="$HEAD_DIR" DRAFTER_DIR="$DRAFTER_DIR" SERVE_DIR="$SERVE_DIR" \
-       NATIVE_DIR="$NATIVE_DIR"
+       NATIVE_DIR="$NATIVE_DIR" REXL3_DIR="$REXL3_DIR"
 }
 
 # ── the link between the Sparks ──────────────────────────────────────────────
@@ -201,7 +208,7 @@ echo "ok   disk: ${free} GiB free at $MODELS_DIR (models need ~200 GiB; ${have} 
 [[ $free -ge 20 ]] || { echo "FAIL under 20 GiB free at $MODELS_DIR"; exit 1; }
 mem=$(awk "/MemTotal/ {printf \"%d\", \$2/1048576}" /proc/meminfo)
 echo "ok   memory: ${mem} GiB"
-mine=" $(pgrep -d " " -f "tensorfol[d] serve" || true) "
+mine=" $(pgrep -d " " -f "tensorfol[d] serve|rexl3-serv[e]" || true) "
 busy=$(nvidia-smi --query-compute-apps=pid,process_name --format=csv,noheader | while IFS=", " read -r pid name; do
   [[ "$mine" == *" $pid "* ]] || echo "$pid $name"; done)
 [[ -z "$busy" ]] || echo "WARN other GPU processes (the model needs ~100 GiB a node): $busy"
@@ -545,22 +552,96 @@ exit $rc' BDIR="$bdir" OUT="$out" WHAT="$what" BASE="$base" API_KEY="$API_KEY" |
   return "$rc"
 }
 
+# ── the REXL3 engine (ENGINE=rexl3): justincasey/REXL3 at $REXL3_REF, launched by rexl3/cluster.sh ─────────────────────
+# Both nodes: NCCL 2.30.7 from the same pip wheel (the ranks compare the library's bytes). Rank 0: Rust $RUST_TOOLCHAIN
+# and the engine source; rexl3/cluster.sh builds there and copies the binary to rank 1 (the ranks compare digests).
+cmd_install_rexl3() {
+  resolve_paths
+  log "installing REXL3 $REXL3_REF into $REXL3_DIR (build on rank 0)"
+  both '
+mkdir -p "$REXL3_DIR/lib" "$BASE_DIR"
+[[ -x "$VENV/bin/python" ]] || python3.12 -m venv "$VENV"
+"$VENV/bin/python" -m pip install --quiet --upgrade pip
+"$VENV/bin/python" -m pip install --quiet -c "$BASE_DIR/constraints.txt" huggingface_hub nvidia-nccl-cu13
+nccl=$("$VENV/bin/python" -c "import nvidia.nccl, os; print(os.path.join(list(nvidia.nccl.__path__)[0], \"lib/libnccl.so.2\"))")
+ln -sf "$nccl" "$REXL3_DIR/lib/libnccl.so.2"
+echo "nccl: $(sha256sum "$nccl" | cut -c1-12)"
+[[ $RANK == 0 ]] || exit 0
+[[ -x "$HOME/.cargo/bin/rustup" ]] || curl -sSf https://sh.rustup.rs | sh -s -- -y --profile minimal --default-toolchain none >/dev/null
+"$HOME/.cargo/bin/rustup" toolchain install "$RUST_TOOLCHAIN" --profile minimal >/dev/null
+echo "rust: $("$HOME/.cargo/bin/cargo" +"$RUST_TOOLCHAIN" --version)"
+src="$REXL3_DIR/src"
+[[ -d "$src/.git" ]] || git init --quiet "$src"
+git -C "$src" fetch --quiet --depth 1 "$REXL3_REPO" tag "$REXL3_REF"
+git -C "$src" -c advice.detachedHead=false checkout --quiet --force "$REXL3_REF"
+head=$(git -C "$src" rev-parse "$REXL3_REF^{commit}")
+[[ -z "$REXL3_COMMIT" || "$head" == "$REXL3_COMMIT" ]] || { echo "FAIL $REXL3_REF resolved to $head, expected $REXL3_COMMIT"; exit 1; }
+git -C "$src" rev-parse --short=12 HEAD > "$src/.rexl3_commit"
+echo "engine at $head"
+' $(paths_kv) REXL3_REPO="$REXL3_REPO" REXL3_REF="$REXL3_REF" REXL3_COMMIT="$REXL3_COMMIT" RUST_TOOLCHAIN="$RUST_TOOLCHAIN" \
+    < /dev/null || die "install failed"
+  log "building the engine on rank 0 (a few minutes), then copying it to rank 1"
+  rexl3_cluster build || die "build failed (log: $REXL3_DIR/build.log on rank 0)"
+}
+
+# rexl3/cluster.sh with this script's nodes and paths (rexl3/engine.env holds the engine defaults: 8 slots, fp8 KV,
+# a 1M-token window, P2 prefill)
+rexl3_cluster() {
+  [[ -z "$API_KEY" ]] || die "ENGINE=rexl3 serves without an API key (REXL3 v0.1): unset API_KEY and keep the port on a private network"
+  env RANK0="$RANK0" RANK1="$RANK1" BASE_DIR="$BASE_DIR" MODELS_DIR="$MODELS_DIR" REMOTE="$REXL3_DIR" MODEL="$PACK_DIR" \
+    DRAFTER="$DRAFTER_DIR" HOST="$HOST" PORT="$PORT" DRAFTS="$DRAFTS" SERVED_NAME="$SERVED_NAME" READY_S="$WAIT_TIMEOUT" \
+    "$ROOT/rexl3/cluster.sh" "$@"
+}
+
+cmd_start_rexl3() {
+  resolve_paths
+  [[ $DRAFTS == on || $DRAFTS == off ]] || die "DRAFTS must be on or off (got: $DRAFTS)"
+  local r
+  for r in 0 1; do
+    remote "$r" '[[ -x "$REXL3_DIR/bin/rexl3-serve" && -e "$REXL3_DIR/lib/libnccl.so.2" ]] || { echo "no engine build in $REXL3_DIR: run ENGINE=rexl3 ./redsnow.sh install"; exit 1; }
+[[ -f "$PACK_DIR/config.json" ]] || { echo "no model at $PACK_DIR: run ./redsnow.sh download"; exit 1; }
+[[ $DRAFTS != on || -f "$DRAFTER_DIR/config.json" ]] || { echo "no drafter at $DRAFTER_DIR: run ./redsnow.sh download"; exit 1; }' \
+      $(paths_kv) DRAFTS="$DRAFTS" || die "rank $r is not set up"
+  done
+  log "starting both ranks (the model loads in about 40 s)"
+  rexl3_cluster start >/dev/null || die "start failed (ENGINE=rexl3 ./redsnow.sh logs)"
+  log "serving $SERVED_NAME at http://${RANK0#*@}:$PORT/v1"
+}
+
+# The full workload of bench/rexl3/bench.py (prefill 8K/32K, needle, TTFT, decode drafted == serial, C=1..8 with
+# concurrent == solo, mixed load, open-loop trace) against rank 0's API, from this machine.
+cmd_bench_rexl3() {
+  resolve_paths
+  local stamp; stamp="$(date +%Y-%m-%d-%H%M%S)-rexl3"
+  mkdir -p "$ROOT/bench/runs/$stamp"
+  log "bench on http://${RANK0#*@}:$PORT; results in bench/runs/$stamp"
+  SERVED_NAME="$SERVED_NAME" python3 "$ROOT/bench/rexl3/bench.py" --base "http://${RANK0#*@}:$PORT" \
+    --out "$ROOT/bench/runs/$stamp/bench.json" | tee "$ROOT/bench/runs/$stamp/metrics.txt"
+}
+
 native() { [[ $ENGINE == native ]]; }
+rexl3() { [[ $ENGINE == rexl3 ]]; }
 case "${1:-help}" in
   setup)     resolve_paths; cmd_preflight; push_constraints
-             if native; then cmd_install_native; cmd_download; else cmd_install; cmd_download; cmd_view; fi
+             if native; then cmd_install_native; cmd_download
+             elif rexl3; then cmd_install_rexl3; cmd_download
+             else cmd_install; cmd_download; cmd_view; fi
              log "setup complete: ./redsnow.sh start" ;;
   preflight) cmd_preflight ;;
-  install)   resolve_paths; push_constraints; if native; then cmd_install_native; else cmd_install; fi ;;
+  install)   resolve_paths; push_constraints
+             if native; then cmd_install_native; elif rexl3; then cmd_install_rexl3; else cmd_install; fi ;;
   download)  cmd_download ;;
-  view)      native && die "view is for ENGINE=python (the native engine reads the pack as downloaded)"; cmd_view ;;
-  start)     if native; then cmd_start_native; else cmd_start; fi ;;
-  stop)      if native; then resolve_paths; native_cluster stop; else cmd_stop; fi ;;
-  restart)   if native; then cmd_start_native; else cmd_stop; cmd_start; fi ;;   # native start stops both ranks first
-  status)    if native; then resolve_paths; native_cluster status; echo; else cmd_status; fi ;;
+  view)      native || rexl3 && die "view is for ENGINE=python (native and rexl3 read the pack as downloaded)"; cmd_view ;;
+  start)     if native; then cmd_start_native; elif rexl3; then cmd_start_rexl3; else cmd_start; fi ;;
+  stop)      if native; then resolve_paths; native_cluster stop; elif rexl3; then resolve_paths; rexl3_cluster stop
+             else cmd_stop; fi ;;
+  restart)   if native; then cmd_start_native; elif rexl3; then cmd_start_rexl3; else cmd_stop; cmd_start; fi ;;   # start stops both ranks first
+  status)    if native; then resolve_paths; native_cluster status; echo; elif rexl3; then resolve_paths; rexl3_cluster status
+             else cmd_status; fi ;;
   smoke)     cmd_smoke ;;
-  logs)      if native; then resolve_paths; N="${N:-60}" native_cluster logs; else cmd_logs "${2:-0}"; fi ;;
-  bench)     if native; then cmd_bench_native "${2:-all}"; else cmd_bench "${2:-all}"; fi ;;
+  logs)      if native; then resolve_paths; N="${N:-60}" native_cluster logs; elif rexl3; then resolve_paths; N="${N:-60}" rexl3_cluster logs
+             else cmd_logs "${2:-0}"; fi ;;
+  bench)     if native; then cmd_bench_native "${2:-all}"; elif rexl3; then cmd_bench_rexl3; else cmd_bench "${2:-all}"; fi ;;
   help|-h|--help) sed -n '2,18p' "$0" | sed 's/^# \{0,1\}//' ;;
   *) die "unknown command: $1 (./redsnow.sh help)" ;;
 esac

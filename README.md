@@ -11,7 +11,9 @@ across both GPUs by tensor parallelism (TP=2), with Inco AI's
 
 The engine is [TensorFold](https://github.com/ashhart/TensorFold) 1.1.9's native Zig + CUDA server, from this project's
 fork: [`justincasey/TensorFold` tag `redsnow-native-v1.1.0`](https://github.com/justincasey/TensorFold/tree/redsnow-native-v1.1.0).
-v1.0.2's Python engine is still one setting away (`ENGINE=python`, [below](#python-engine-v102)).
+v1.0.2's Python engine is still one setting away (`ENGINE=python`, [below](#python-engine-v102)), and so is the
+[REXL3](https://github.com/REXL3/REXL3) engine (`ENGINE=rexl3`, [below](#rexl3-engine)): faster decode, a prompt cache
+and a 1M-token window, prefill on par.
 
 One script sets it up and runs it:
 
@@ -184,8 +186,8 @@ The default is 2 streams with a 274,432-token window (67 × 4,096; the model all
 PARALLEL=8 CONTEXT=65536 ./redsnow.sh start
 ```
 
-Measured on pair B (2026-10-31, fp8 KV, 6 GiB reserve per rank). Values come from rank 0's startup line. The short
-TTFT is a ~220-token chat prompt on an idle server. Boot time does not depend on the stream count.
+Measured on the lab's dgx-head + dgx-worker pair (2026-10-31, fp8 KV, 6 GiB reserve per rank). Values come from rank 0's
+startup line. The short TTFT is a ~220-token chat prompt on an idle server. Boot time does not depend on the stream count.
 
 | Streams | Context per stream | KV page pool | Model per rank | Prompt cache | Short TTFT |
 |---|---|---|---|---|---|
@@ -219,8 +221,68 @@ For chat-heavy or multi-user serving, use 4 or 8 streams. Use 2 when single requ
 | Boot | each layer's checkpoint bytes read by 8 threads while the previous layer loads; ~100 s from `start` to serving |
 
 `native/cluster.sh` is the launcher `redsnow.sh` calls. For engine development it also syncs a local checkout
-(`TF_SRC=<checkout> native/cluster.sh sync && native/cluster.sh build`), and `autoresearch.sh` is the benchmark
-harness used to tune it (8 streams × 65,536, primary metric `trace_mean_s`).
+(`TF_SRC=<checkout> native/cluster.sh sync && native/cluster.sh build`). It was tuned with an earlier `autoresearch.sh`
+(8 streams × 65,536, primary metric `trace_mean_s`); today's `autoresearch.sh` is the REXL3 harness.
+
+## REXL3 engine
+
+`ENGINE=rexl3` in `.env` serves with [REXL3](https://github.com/REXL3/REXL3), a Rust + CUDA engine for GB10, from this
+project's fork [`justincasey/REXL3` branch `redsnow`](https://github.com/justincasey/REXL3/tree/redsnow) (REXL3 v0.1.0's
+engine source plus this project's work, AGPL-3.0). `setup` installs Rust 1.89.0 and NCCL 2.30.7, clones the pinned tag
+on rank 0 and builds it there (~2 min), and copies the binary to rank 1; `start` takes about 40 s. The other commands
+work as for the native engine. Its settings (streams, window, KV pool, prompt cache, prefill arithmetic) live in
+[rexl3/engine.env](rexl3/engine.env); `rexl3/cluster.sh` is its launcher.
+
+What the fork adds to REXL3 v0.1.0 for this pack:
+
+- **DFlash2 for GLM**: the drafter's linears quantized to 4 bits at load, taps after layers 5/14/24/33/42, its round split
+  across both ranks, its context window kept with prompt-cache snapshots. The pack's NextN layer is not loaded.
+- **Prefill for the 4.91 bpw pack**: REXL3's P2 prompt arithmetic with 6-bit and mixed-width experts, rows split between
+  the ranks, the last layer's tail on the head rows only, 4,096-row chunks (up to 8,192 accepted), the prompt cache's
+  snapshot taken inside the last chunk.
+- **TensorFold's expert split**: each rank holds half of every routed expert's width, so both ranks read the same bytes.
+- **fp8 latent KV** (E4M3 with an fp32 scale per token) and a **prompt cache** whose pages are idle pages of the KV pool.
+- **Concurrency**: prompts arriving together fill in one forward, a long prompt fills in parts between decode rounds.
+- Decode kernels, launch merging, the router, memory planning (rank 0 keeps at least 4 GiB free under load).
+
+**Correctness.** Replies are deterministic; a drafted reply equals the `"draft": false` one, a concurrent reply its solo
+one, and a reply from the prompt cache the `"prefix_cache": false` one, token for token. Prompt rows are computed with
+REXL3's P2 arithmetic and the KV cache is fp8, so replies are not bit-identical to an fp16 engine's. Measured against
+REXL3's exact P1/fp16 path (each half of the test set ran both paths on one build: problems 0-399 on the fork's
+facec7f, 400-1,318 on e111686): GSM8K (all 1,319 test problems, greedy, non-thinking) 1,248 vs 1,256
+correct, 13 vs 21 problems right in only one of the two (exact two-sided p = 0.23, no difference beyond noise); every
+needle passes at 8K, 32K and 186K on both, and a needle at 1,027,057 tokens passes on this configuration
+(`bench/rexl3/quality.sh`, `bench/rexl3/needle_long.py`, `bench/rexl3/gsm8k_compare.py`).
+
+| Measurement (2026-11-07, `bench/rexl3/bench.py`, 8 streams, ~1.18M-token KV pool) | REXL3 | Native |
+|---|---|---|
+| Decode with DFlash2, mean of 6 prompts (512 tokens, thinking on) | **47.8 tok/s** (prose 38.1) | 44.8 (35.5) |
+| Decode without drafting | **28.7 tok/s** | 27.8 |
+| Prefill, cold 8K / 32K prompt | **1,614** / 1,685 tok/s | 1,513 / 1,660 |
+| Time to first token, ~220-token chat | 0.46 s | 0.47 s |
+| Next turn of an 8.9K-token conversation (prompt cache) | **0.39 s** to first token (5.5 s uncached) | no cache across turns |
+| 2 / 4 / 8 chats at once, total decode | **52.9** / 67.0 / 100.4 tok/s | 48.9 / 66.2 / 97.8 |
+| 4 chats decoding while a cold 32K prompt fills: longest gap between their tokens | **0.34 s** | 0.46 s |
+| Short chat during that fill: time to first token | **0.70 s** | 0.82 s |
+| Open-loop trace, mean submit-to-last-token | 25.4 s | 25.8 s |
+| Longest window | **1,048,576 tokens** (needle at 1.03M tokens: 12.3 min) | 274,432 (2 streams) |
+| Ready after `start` | **~40 s** | ~100 s |
+
+REXL3 column: one full run of the tagged build (`redsnow-rexl3-v1.0.0`); between runs of one build prefill varies by
+1-2%, decode by about 1 tok/s, the trace by about 0.5 s and C8 by up to 7 tok/s, so the unbolded REXL3 values are level
+with the native engine's, not ahead. On the tagged build both ranks keep at least 5.2 GiB `MemAvailable` through the
+whole benchmark and through a 1.03M-token prompt.
+
+For long prompts, `PREFILL_CHUNK=7168` and `KV_TOKENS=1048576` in `.env` fill 4-6% faster (1,680 / 1,759 tok/s against
+1,585 / 1,691 at 4,096 rows, same build and pair) at a cost to everything else: the open-loop trace takes 27.2 s
+instead of 25.3 s, the pool holds 1,048,576 tokens, and rank 0's least `MemAvailable` drops to 4.3 GiB.
+
+Limits of `ENGINE=rexl3`:
+
+- No API key (REXL3 v0.1 has none; `redsnow.sh` refuses `API_KEY`): keep the port on a private network.
+- The window and pool are set in `rexl3/engine.env` (8 streams, 1M-token window, 1,179,648 KV tokens); `PARALLEL`,
+  `CONTEXT`, `KV_DTYPE` and `MEMORY_RESERVE_GIB` do not apply.
+- A prompt shorter than 1,024 tokens is not kept in the prompt cache (`REXL3_PREFIX_MIN_CUT`).
 
 ## Python engine (v1.0.2)
 
@@ -245,7 +307,8 @@ The `redsnow-v1` branch adds to TensorFold 0.6.5 + `glm53-tp4-spark`:
 ### Native engine (2026-10-31, `redsnow-native-v1.1.0`)
 
 `bench/native/run.py` and `bench/native/conc.py` (what `./redsnow.sh bench run` and `bench conc` run) on a fresh
-boot of pair A, at 8 streams × 65,536 (`PARALLEL=8 CONTEXT=65536`), greedy, fp8 KV, DFlash2 on, by `autoresearch.sh`.
+boot of the lab's dgx-worker-2 + dgx-worker-3 pair, at 8 streams × 65,536 (`PARALLEL=8 CONTEXT=65536`), greedy, fp8 KV,
+DFlash2 on, by the native engine's `autoresearch.sh` of that time.
 Both fail on any drafted reply that differs from its `"draft": false` reply, or any concurrent reply that differs
 from its solo one.
 

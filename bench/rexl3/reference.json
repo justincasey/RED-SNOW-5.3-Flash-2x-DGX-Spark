@@ -1,0 +1,20 @@
+{
+ "pinned": "2026-11-07T11:40:09",
+ "fingerprint": "fp_facec7f3abce_46278348_cb1311_glmkv8",
+ "serial": {
+  "code": "d53113a6ebaca109",
+  "prose": "a398cc6181c4dd37",
+  "math": "075c4fd21c5d7c99",
+  "chat_explain": "18c9da912f333b60",
+  "chat_multiturn": "ea14919f4d463dfa",
+  "long_doc": "803b6ce3094629fb"
+ },
+ "prompt_replies": {
+  "prefill_8k": "91b2b2d5f369e140",
+  "prefill_32k": "360b059b0d30f80c",
+  "needle": "e6331521da7be087"
+ },
+ "contract": "Contract B (user, 2026-11-07): REXL3 redsnow facec7f, GLM P2 prefill at --prefill-chunk 4096 (sequence-parallel residual), fp8 E4M3 latent KV with an fp32 row scale, TensorFold-style expert width split, P1 decode/verify, DFlash2 drafter, thinking via template. Correctness: deterministic, drafted == serial, concurrent == solo, solo == serial prefix, cached == uncached, and these replies.",
+ "quality": "Same build facec7f, P1/fp16 vs contract B: GSM8K first 400 (non-thinking, greedy) 385 vs 381, discordant 7 vs 3, exact two-sided p = 0.34 (no difference beyond noise); needles 8K/32K x 10/50/90% + 186K pass on both; 884,962-token needle passes on contract B (P1/fp16's 866K-956K pool cannot hold it).",
+ "previous": "bench/rexl3/reference-p1-478d7da.json"
+}
